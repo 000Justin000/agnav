@@ -5,26 +5,30 @@ import numpy as np
 def read_MetaQA_KB():
 
     def edge2prefix(edge):
-        if edge in ["directed_by", "written_by", "starred_actors"]:
-            return "Person: "
+        if edge == "directed_by":
+            return "director: "
+        elif edge == "written_by":
+            return "writer: "
+        elif edge == "starred_actors":
+            return "actor: "
         elif edge == "release_year":
-            return "Year: "
+            return "year: "
         elif edge == "in_language":
-            return "Language: "
+            return "language: "
         elif edge == "has_tags":
-            return "Tag: "
+            return "tag: "
         elif edge == "has_genre":
-            return "Genre: "
+            return "genre: "
         elif edge == "has_imdb_votes":
-            return "Votes: "
+            return "votes: "
         elif edge == "has_imdb_rating":
-            return "Rating: "
+            return "rating: "
         else:
             raise Exception("unexpected edge type \"" + edge + "\"")
 
     df = pd.read_csv("datasets/MetaQA/kb.txt", delimiter='|', names=["head", "edge", "tail"])
 
-    decorated_heads = "Movie: " + df["head"]
+    decorated_heads = "movie: " + df["head"]
     decorated_tails = df["edge"].apply(edge2prefix) + df["tail"]
     fwd_edges = "fwd_"+df["edge"]
     rvs_edges = "rvs_"+df["edge"]
