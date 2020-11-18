@@ -40,7 +40,3 @@ def read_MetaQA_KB():
     G.add_edges_from(zip(decorated_tails, decorated_heads, [{"type": rvs_edge} for rvs_edge in rvs_edges]))
 
     return G
-
-G = read_MetaQA_KB()
-
-qa_1 = pd.read_csv("datasets/MetaQA/1-hop/vanilla/qa_train.txt", delimiter='\t', names=["question", "answers"])
