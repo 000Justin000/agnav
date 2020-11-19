@@ -1,8 +1,11 @@
 import networkx as nx
 import pandas as pd
 import numpy as np
+import re
+import torch
+from transformers import AutoTokenizer, AutoModel
 
-def read_MetaQA_KB():
+def read_MetaQA_KG():
 
     def edge2prefix(edge):
         if edge == "directed_by":
@@ -40,3 +43,35 @@ def read_MetaQA_KB():
     G.add_edges_from(zip(decorated_tails, decorated_heads, [{"type": rvs_edge} for rvs_edge in rvs_edges]))
 
     return G
+
+# def read_MetaQA_QA(question_type="1-hop"):
+entity_token = "[unused0]"
+
+def process_question(question):
+    processed_question = re.sub(r"(\[.+\])", entity_token, question)
+    entity = re.search(r"\[(.+)\]", question).group(1)
+
+    return processed_question, entity
+
+def process_answers(answers):
+    return set(answers.split('|'))
+
+question_type = "1-hop"
+qa_train_texts = pd.read_csv("datasets/MetaQA/"+question_type+"/vanilla/qa_train.txt", delimiter='\t', names=["question", "answers"])
+qa_train_qtype = pd.read_csv("datasets/MetaQA/"+question_type+"/qa_train_qtype.txt", names=["question_type"])
+qa_train = pd.concat([qa_train_texts, qa_train_qtype], axis=1)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", additional_special_tokens=[entity_token])
+
+
+
+
+
+
+
+
+
+
+
+

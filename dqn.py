@@ -5,8 +5,10 @@ import utils
 ndim_action = 32
 ndim_state = 32
 
+#---------------------------------------------------------------------
 # get the knowledge graph
-G = utils.read_MetaQA_KB()
+#---------------------------------------------------------------------
+G = utils.read_MetaQA_KG()
 #---------------------------------------------------------------------
 # action embeddings
 #---------------------------------------------------------------------
@@ -24,4 +26,5 @@ Qsa = nn.Sequential(nn.Linear(ndim_action+ndim_state,1), nn.Sigmoid())
 
 # state transation function
 dec = nn.LSTM(ndim_action, ndim_state)
+
 
