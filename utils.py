@@ -64,7 +64,10 @@ qa_train = pd.concat([qa_train_texts, qa_train_qtype], axis=1)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", additional_special_tokens=[entity_token])
 
-
+model = AutoModel.from_pretrained("bert-base-uncased")
+processed_question, entity = process_question(qa_train["question"][0])
+inputs = tokenizer(processed_question, return_tensors="pt")
+output = model(**inputs)
 
 
 
