@@ -8,7 +8,7 @@ from transformers import AutoTokenizer, AutoModel
 
 def read_MetaQA_KG():
 
-    def edge2prefix(edge):
+    def edge_to_prefix(edge):
         if edge == "directed_by":
             return "director: "
         elif edge == "written_by":
@@ -33,7 +33,7 @@ def read_MetaQA_KG():
     df = pd.read_csv("datasets/MetaQA/kb.txt", delimiter='|', names=["head", "edge", "tail"])
 
     decorated_heads = "movie: " + df["head"]
-    decorated_tails = df["edge"].apply(edge2prefix) + df["tail"]
+    decorated_tails = df["edge"].apply(edge_to_prefix) + df["tail"]
     fwd_edges = "fwd_"+df["edge"]
     rvs_edges = "rvs_"+df["edge"]
 
@@ -45,37 +45,52 @@ def read_MetaQA_KG():
 
     return G
 
-# def read_MetaQA_QA(question_type="1-hop"):
-entity_token = "[unused0]"
+def read_MetaQA_Instances(question_type="1-hop"):
+    QAInstance = namedtuple("QAInstance", ["tokenized_inputs", "decorated_entity", "answer_set"])
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    entity_token = "[unused0]"
+    tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", additional_special_tokens=[entity_token])
 
-def process_question(question):
-    processed_question = re.sub(r"(\[.+\])", entity_token, question)
-    entity = re.search(r"\[(.+)\]", question).group(1)
+    def process_question(question):
+        #---------------------------------------------------------------------------------
+        processed_question = re.sub(r"(\[.+\])", entity_token, question)
+        entity = re.search(r"\[(.+)\]", question).group(1)
+        #---------------------------------------------------------------------------------
+        return processed_question, entity
 
-    return processed_question, entity
+    def process_answers(answers):
+        return set(answers.split('|'))
 
-def process_answers(answers):
-    return set(answers.split('|'))
+    def info_to_instance(info):
+        #---------------------------------------------------------------------------------
+        processed_question, entity = process_question(info["question"])
+        #---------------------------------------------------------------------------------
+        tokenized_inputs = tokenizer(processed_question, return_tensors="pt")
+        tokenized_inputs["input_ids"] = tokenized_inputs["input_ids"].to(device)
+        tokenized_inputs["token_type_ids"] = tokenized_inputs["token_type_ids"].to(device)
+        tokenized_inputs["attention_mask"] = tokenized_inputs["attention_mask"].to(device)
+        #---------------------------------------------------------------------------------
+        decorated_entity = info["question_type"].split('_')[0] + ": " + entity
+        #---------------------------------------------------------------------------------
+        answer_set = process_answers(info["answers"])
+        #---------------------------------------------------------------------------------
+        return QAInstance(tokenized_inputs, decorated_entity, answer_set)
 
-question_type = "1-hop"
-qa_train_texts = pd.read_csv("datasets/MetaQA/"+question_type+"/vanilla/qa_train.txt", delimiter='\t', names=["question", "answers"])
-qa_train_qtype = pd.read_csv("datasets/MetaQA/"+question_type+"/qa_train_qtype.txt", names=["question_type"])
-qa_train = pd.concat([qa_train_texts, qa_train_qtype], axis=1)
+    #-------------------------------------------------------------------------------------
+    qa_text_train = pd.read_csv("datasets/MetaQA/"+question_type+"/vanilla/qa_train.txt", delimiter='\t', names=["question", "answers"])
+    qa_qtype_train = pd.read_csv("datasets/MetaQA/"+question_type+"/qa_train_qtype.txt", names=["question_type"])
+    qa_info_train = pd.concat([qa_text_train, qa_qtype_train], axis=1)
+    qa_instance_train = qa_info_train.apply(info_to_instance, axis=1)
+    #-------------------------------------------------------------------------------------
+    qa_text_dev = pd.read_csv("datasets/MetaQA/"+question_type+"/vanilla/qa_dev.txt", delimiter='\t', names=["question", "answers"])
+    qa_qtype_dev = pd.read_csv("datasets/MetaQA/"+question_type+"/qa_dev_qtype.txt", names=["question_type"])
+    qa_info_dev = pd.concat([qa_text_dev, qa_qtype_dev], axis=1)
+    qa_instance_dev = qa_info_dev.apply(info_to_instance, axis=1)
+    #-------------------------------------------------------------------------------------
+    qa_text_test = pd.read_csv("datasets/MetaQA/"+question_type+"/vanilla/qa_test.txt", delimiter='\t', names=["question", "answers"])
+    qa_qtype_test = pd.read_csv("datasets/MetaQA/"+question_type+"/qa_test_qtype.txt", names=["question_type"])
+    qa_info_test = pd.concat([qa_text_test, qa_qtype_test], axis=1)
+    qa_instance_test = qa_info_test.apply(info_to_instance, axis=1)
+    #-------------------------------------------------------------------------------------
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", additional_special_tokens=[entity_token])
-
-model = AutoModel.from_pretrained("bert-base-uncased")
-processed_question, entity = process_question(qa_train["question"][0])
-inputs = tokenizer(processed_question, return_tensors="pt")
-output = model(**inputs)
-
-
-
-
-
-
-
-
-
-
+    return qa_instance_train, qa_instance_dev, qa_instance_test
