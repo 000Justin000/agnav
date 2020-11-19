@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import re
 import torch
+from collections import namedtuple
 from transformers import AutoTokenizer, AutoModel
 
 def read_MetaQA_KG():
