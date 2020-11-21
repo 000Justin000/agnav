@@ -47,42 +47,46 @@ model = nn.ModuleList([emb,enc,qsa,dec])
 #---------------------------------------------------------------------
 
 optimizer = optim.Adam(model.parameters())
-for m in range(M):
-    tokenized_inputs, decorated_entity, answer_set = qa_train.sample(1).values[0]
-    assert decorated_entity in G.nodes
-    curr_node = decorated_entity
+# for m in range(M):
+tokenized_inputs, decorated_entity, answer_set = qa_train.sample(1).values[0]
+assert decorated_entity in G.nodes
+curr_node = decorated_entity
 
-    # set initial values for state, action, and reward
-    state = enc(**tokenized_inputs)[1]
-    action = None
-    reward = None
+# set initial values for state, action, and reward
+state = enc(**tokenized_inputs)[1]
+action = None
+reward = None
 
-    for t in range(T):
-        if curr_node != "termination":
-            # available actions as going along one of the edges or terminate
-            actions = list(set([info["type"] for (curr_node, next_node, info) in G.edges(curr_node, data=True)] + ["terminate"]))
-            emb_actions = emb(torch.tensor([action_to_ix[action] for action in actions], dtype=torch.long).to(device))
-            emb_sapairs = torch.cat((state.repeat(len(actions),1), emb_actions), 1)
-            val_sapairs = qsa(emb_sapairs)
+for t in range(T+1):
+    if curr_node != "termination":
+        # available actions as going along one of the edges or terminate
+        actions = list(set([info["type"] for (curr_node, next_node, info) in G.edges(curr_node, data=True)] + ["terminate"]))
+        emb_actions = emb(torch.tensor([action_to_ix[action] for action in actions], dtype=torch.long).to(device))
+        emb_sapairs = torch.cat((state.repeat(len(actions),1), emb_actions), 1)
+        val_sapairs = qsa(emb_sapairs)
 
-        if t != 0:
-            if curr_node == "termination":
-                reference = reward
-            else:
-                reference = reward + gamma*value_sa.max().item()
-
-            # update the action-value function for the state and action at the previous step
-            val_sapair0 = qsa(torch.cat((state,emb(torch.tensor([action_to_ix[action]], dtype=torch.long).to(device))), 1))
-            optimizer.zero_grad()
-            loss = (val_sapair0-reference)*(val_sapair0-reference)
-            loss.backward()
-            optimizer.step()
-
-        # selection action with epsilon-greedy policy
-        if random.random() < epsilon:
-            action = random.choice(actions)
+    if t != 0:
+        if curr_node == "termination":
+            reference = reward
         else:
-            action = actions[val_sapairs.argmax()]
+            reference = reward + gamma*value_sa.max().item()
+
+        # update the action-value function for the state and action at the previous step
+        val_sapair0 = qsa(torch.cat((state,emb(torch.tensor([action_to_ix[action]], dtype=torch.long).to(device))), 1))
+        optimizer.zero_grad()
+        loss = (val_sapair0-reference)*(val_sapair0-reference)
+        loss.backward()
+        optimizer.step()
+
+    if curr_node != "termination":
+        if t == T-1:
+            action = "terminate"
+        else:
+            # selection action with epsilon-greedy policy
+            if random.random() < epsilon:
+                action = random.choice(actions)
+            else:
+                action = actions[val_sapairs.argmax()]
 
         # take the action
         if action == "terminate":
