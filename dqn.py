@@ -9,10 +9,10 @@ from utils import read_MetaQA_KG, read_MetaQA_Instances
 torch.autograd.set_detect_anomaly(True)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ndim_state = 768
-ndim_action = 64
-epsilon = 0.3
-gamma = 0.9
-M = 5
+ndim_action = 128
+epsilon = 0.30
+gamma = 0.90
+M = 100000
 T = 3
 
 #---------------------------------------------------------------------
@@ -39,20 +39,21 @@ emb = nn.Embedding(len(possible_actions), ndim_action).to(device)
 # language embedding
 enc = AutoModel.from_pretrained("bert-base-uncased").to(device)
 # action value function
-qsa = nn.Sequential(nn.Linear(ndim_action+ndim_state,1), nn.Sigmoid()).to(device)
+qsa = nn.Sequential(nn.Linear(ndim_action+ndim_state,ndim_action+ndim_state), nn.Sigmoid(), nn.Linear(ndim_action+ndim_state,1), nn.Sigmoid()).to(device)
 # state transation function
 dec = nn.RNNCell(ndim_action, ndim_state).to(device)
 # container for the entire model
-model = nn.ModuleList([emb, enc, qsa, dec])
+model = nn.ModuleList([emb, qsa, dec])
 #---------------------------------------------------------------------
 
-optimizer = optim.Adam(model.parameters())
-
+optimizer = optim.Adam(model.parameters(), lr=1.0e-4)
+success_rate = 0.0
 for m in range(M):
     question, tokenized_inputs, decorated_entity, answer_set = qa_train.sample(1).values[0]
     print(question)
     assert decorated_entity in G.nodes
     curr_node = decorated_entity
+    print(curr_node)
 
     # set initial values for state, action, and reward
     state = enc(**tokenized_inputs)[1]
@@ -61,7 +62,6 @@ for m in range(M):
 
     losses = []
     for t in range(T+1):
-        print(t)
         if curr_node != "termination":
             # available actions as going along one of the edges or terminate
             actions = list(set([info["type"] for (curr_node, next_node, info) in G.edges(curr_node, data=True)] + ["terminate"]))
@@ -88,13 +88,18 @@ for m in range(M):
                     action = actions[val_sapairs.argmax()]
 
             # take the action
-            if action == "terminate":
-                reward = 1.0 if (re.match(r".+: (.+)", curr_node).group(1) in answer_set) else 0.0
-                curr_node = "termination"
-            else:
+            if action != "terminate":
                 reward = 0.0
                 curr_node = random.choice(list(filter(lambda tp: tp[2]["type"] == action, G.edges(curr_node, data=True))))[1]
                 state = dec(emb(torch.tensor([action_to_ix[action]], dtype=torch.long).to(device)), state)
+                print(action, "  =====>  ", curr_node)
+            else:
+                reward = 1.0 if (re.match(r".+: (.+)", curr_node).group(1) in answer_set) else 0.0
+                curr_node = "termination"
+                success_rate = 0.99*success_rate + 0.01*reward
+                print(action, "  =====>  ", curr_node)
+                print(("success" if reward == 1.0 else "failure") + "    " + str(success_rate))
+                print()
 
     optimizer.zero_grad()
     sum(losses).backward()
