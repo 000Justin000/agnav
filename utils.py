@@ -1,10 +1,9 @@
 import networkx as nx
 import pandas as pd
-import numpy as np
 import re
 import torch
 from collections import namedtuple
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoTokenizer
 
 def read_MetaQA_KG():
 
@@ -46,7 +45,7 @@ def read_MetaQA_KG():
     return G
 
 def read_MetaQA_Instances(question_type="1-hop"):
-    QAInstance = namedtuple("QAInstance", ["tokenized_inputs", "decorated_entity", "answer_set"])
+    QAInstance = namedtuple("QAInstance", ["question", "tokenized_inputs", "decorated_entity", "answer_set"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     entity_token = "[unused0]"
     tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", additional_special_tokens=[entity_token])
@@ -74,7 +73,7 @@ def read_MetaQA_Instances(question_type="1-hop"):
         #---------------------------------------------------------------------------------
         answer_set = process_answers(info["answers"])
         #---------------------------------------------------------------------------------
-        return QAInstance(tokenized_inputs, decorated_entity, answer_set)
+        return QAInstance(info["question"], tokenized_inputs, decorated_entity, answer_set)
 
     #-------------------------------------------------------------------------------------
     qa_text_train = pd.read_csv("datasets/MetaQA/"+question_type+"/vanilla/qa_train.txt", delimiter='\t', names=["question", "answers"])
