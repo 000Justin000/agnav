@@ -1,5 +1,6 @@
-import random
 import re
+import math
+import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -10,9 +11,11 @@ torch.autograd.set_detect_anomaly(True)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ndim_state = 768
 ndim_action = 128
-epsilon = 0.30
 gamma = 0.90
-M = 100000
+epsilon_start = 1.00
+epsilon_end = 0.10
+M = 1000000
+epsilon_decay = 0.2*M
 T = 3
 
 #---------------------------------------------------------------------
@@ -42,13 +45,16 @@ enc = AutoModel.from_pretrained("bert-base-uncased").to(device)
 qsa = nn.Sequential(nn.Linear(ndim_action+ndim_state,ndim_action+ndim_state), nn.Sigmoid(), nn.Linear(ndim_action+ndim_state,1), nn.Sigmoid()).to(device)
 # state transation function
 dec = nn.RNNCell(ndim_action, ndim_state).to(device)
-# container for the entire model
-model = nn.ModuleList([emb, qsa, dec])
 #---------------------------------------------------------------------
 
-optimizer = optim.Adam(model.parameters(), lr=1.0e-4)
+optimizer = optim.Adam([{"params": emb.parameters(), "lr": 1.0e-4},
+                        {"params": enc.parameters(), "lr": 1.0e-4},
+                        {"params": qsa.parameters(), "lr": 1.0e-4},
+                        {"params": dec.parameters(), "lr": 1.0e-4}])
 success_rate = 0.0
 for m in range(M):
+    epsilon = epsilon_end + (epsilon_start-epsilon_end) * math.exp(-m/epsilon_decay)
+
     question, tokenized_inputs, decorated_entity, answer_set = qa_train.sample(1).values[0]
     print(question)
     assert decorated_entity in G.nodes
@@ -73,7 +79,7 @@ for m in range(M):
             reference = reward if (curr_node == "termination") else (reward + gamma*val_sapairs.max().item())
             val_sapair0 = qsa(torch.cat((state, emb(torch.tensor([action_to_ix[action]], dtype=torch.long).to(device))), 1))
             # store the loss at each time step (to be used for optimization at the end of the episode)
-            losses.append((val_sapair0-reference)**2)
+            losses.append(nn.functional.smooth_l1_loss(val_sapair0, reference))
 
         if curr_node == "termination":
             break
@@ -89,18 +95,22 @@ for m in range(M):
 
             # take the action
             if action != "terminate":
-                reward = 0.0
+                reward = torch.tensor(0.0, device=device)
                 curr_node = random.choice(list(filter(lambda tp: tp[2]["type"] == action, G.edges(curr_node, data=True))))[1]
                 state = dec(emb(torch.tensor([action_to_ix[action]], dtype=torch.long).to(device)), state)
                 print(action, "  =====>  ", curr_node)
             else:
-                reward = 1.0 if (re.match(r".+: (.+)", curr_node).group(1) in answer_set) else 0.0
+                reward = torch.tensor(1.0 if (re.match(r".+: (.+)", curr_node).group(1) in answer_set) else 0.0, device=device)
                 curr_node = "termination"
-                success_rate = 0.99*success_rate + 0.01*reward
+                success_rate = 0.999*success_rate + 0.001*reward
                 print(action, "  =====>  ", curr_node)
-                print(("success" if reward == 1.0 else "failure") + "    " + str(success_rate))
+                print("success" if reward == 1.0 else "failure")
+                print("success_rate:    ", float(success_rate))
                 print()
 
     optimizer.zero_grad()
     sum(losses).backward()
     optimizer.step()
+
+    if (m+1) % 10000 == 0:
+        torch.save({"emb" : emb.state_dict(), "enc" : enc.state_dict(), "qsa" : qsa.state_dict(), "dec" : dec.state_dict()}, "checkpoints/save@{:07d}.pt".format(m+1))
