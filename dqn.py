@@ -88,10 +88,13 @@ for m in range(M):
         # compute the action value functions for available actions at the current node
         if t == 0:
             curr_actions = unique([info["type"] for (_, _, info) in G.edges(curr_node, data=True)]) + ["terminate"]
-            curr_value = qsa(curr_state, emb_actions(curr_actions))
+            curr_values = qsa(curr_state, emb_actions(curr_actions))
         else:
             # values already computed
             pass
+
+        print(curr_actions)
+        print(curr_values.data.reshape(-1).to("cpu"))
 
         # select the action at the current time step
         if t == T-1:
