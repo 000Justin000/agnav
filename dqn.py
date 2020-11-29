@@ -14,8 +14,8 @@ class ActionValueFunc(nn.Module):
 
     def forward(self, state, emb_actions):
         transformed_state = self.state_transformation(state)
-        vals = torch.sigmoid((transformed_state*emb_actions).sum(axis=-1))
-        # vals = (transformed_state*emb_actions).sum(axis=-1)
+        # vals = torch.sigmoid((transformed_state*emb_actions).sum(axis=-1))
+        vals = (transformed_state*emb_actions).sum(axis=-1)
         return vals
 
 
@@ -66,12 +66,14 @@ optimizer = optim.Adam([{"params": emb.parameters(), "lr": 1.0e-4},
                         {"params": enc.parameters(), "lr": 1.0e-4},
                         {"params": qsa.parameters(), "lr": 1.0e-4},
                         {"params": dec.parameters(), "lr": 1.0e-4}])
+loss_func = nn.L1Loss()
+
 success_rate = 0.0
 for m in range(M):
     epsilon = epsilon_end + (epsilon_start-epsilon_end) * math.exp(-m/epsilon_decay)
 
-    # question, tokenized_inputs, decorated_entity, answer_set = qa_train.sample(1).values[0]
-    question, tokenized_inputs, decorated_entity, answer_set = qa_train[0]
+    question, tokenized_inputs, decorated_entity, answer_set = qa_train.sample(1).values[0]
+    # question, tokenized_inputs, decorated_entity, answer_set = qa_train[0]
     assert decorated_entity in G.nodes
 
     # set initial values for state, action, and reward
@@ -127,7 +129,9 @@ for m in range(M):
             next_actions = None
             next_values = None
             reference = reward
-        losses.append(nn.functional.smooth_l1_loss(qsa(curr_state, emb_actions([action])), reference))
+        losses.append(loss_func(qsa(curr_state, emb_actions([action])), reference))
+        # losses.append(abs(qsa(curr_state, emb_actions([action]) - reference)))
+        print(curr_node, "    ", action, "    ", qsa(curr_state, emb_actions([action]))[0].data.to("cpu"), "    ", reference.to("cpu"))
 
         if next_node != "termination":
             curr_node = next_node
