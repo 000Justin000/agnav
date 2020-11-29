@@ -26,7 +26,7 @@ ndim_action = 128
 gamma = 0.90
 epsilon_start = 1.00
 epsilon_end = 0.10
-M = 10000
+M = 1000000
 epsilon_decay = 0.2*M
 T = 3
 
@@ -131,7 +131,7 @@ for m in range(M):
             reference = reward
         losses.append(loss_func(qsa(curr_state, emb_actions([action])), reference))
         # losses.append(abs(qsa(curr_state, emb_actions([action]) - reference)))
-        print(curr_node, "    ", action, "    ", qsa(curr_state, emb_actions([action]))[0].data.to("cpu"), "    ", reference.to("cpu"))
+        print("    ", curr_node, "    ", action, "    ", qsa(curr_state, emb_actions([action]))[0].data.to("cpu"), "    ", reference.to("cpu"))
 
         if next_node != "termination":
             curr_node = next_node
