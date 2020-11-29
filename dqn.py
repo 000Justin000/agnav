@@ -14,7 +14,7 @@ ndim_action = 128
 gamma = 0.90
 epsilon_start = 1.00
 epsilon_end = 0.10
-M = 1000000
+M = 10000
 epsilon_decay = 0.2*M
 T = 3
 
@@ -34,6 +34,17 @@ possible_actions.append("terminate")
 action_to_ix = dict(map(reversed, enumerate(possible_actions)))
 #---------------------------------------------------------------------
 
+class ActionValueFunc(nn.Module):
+    def __init__(self, ndim_state, ndim_action):
+        super(ActionValueFunc, self).__init__()
+        self.state_transformation = nn.Sequential(nn.Linear(ndim_state,ndim_action))
+
+    def forward(self, state, emb_actions):
+        transformed_state = self.state_transformation(state)
+        vals = torch.sigmoid((transformed_state*emb_actions).sum(axis=-1))
+        # vals = (transformed_state*emb_actions).sum(axis=-1)
+        return vals
+
 #---------------------------------------------------------------------
 # trainable model parameters
 #---------------------------------------------------------------------
@@ -42,7 +53,7 @@ emb = nn.Embedding(len(possible_actions), ndim_action).to(device)
 # language embedding
 enc = AutoModel.from_pretrained("bert-base-uncased").to(device)
 # action value function
-qsa = nn.Sequential(nn.Linear(ndim_action+ndim_state,ndim_action+ndim_state), nn.Sigmoid(), nn.Linear(ndim_action+ndim_state,1), nn.Sigmoid()).to(device)
+qsa = ActionValueFunc(ndim_state, ndim_action).to(device)
 # state transation function
 dec = nn.RNNCell(ndim_action, ndim_state).to(device)
 #---------------------------------------------------------------------
@@ -55,7 +66,8 @@ success_rate = 0.0
 for m in range(M):
     epsilon = epsilon_end + (epsilon_start-epsilon_end) * math.exp(-m/epsilon_decay)
 
-    question, tokenized_inputs, decorated_entity, answer_set = qa_train.sample(1).values[0]
+    # question, tokenized_inputs, decorated_entity, answer_set = qa_train.sample(1).values[0]
+    question, tokenized_inputs, decorated_entity, answer_set = qa_train[0]
     print(question)
     assert decorated_entity in G.nodes
     curr_node = decorated_entity
@@ -70,16 +82,18 @@ for m in range(M):
     for t in range(T+1):
         if curr_node != "termination":
             # available actions as going along one of the edges or terminate
-            actions = list(set([info["type"] for (curr_node, next_node, info) in G.edges(curr_node, data=True)] + ["terminate"]))
+            actions = list(set([info["type"] for (curr_node, next_node, info) in G.edges(curr_node, data=True)])) + ["terminate"]
             emb_actions = emb(torch.tensor([action_to_ix[action] for action in actions], dtype=torch.long).to(device))
-            emb_sapairs = torch.cat((state.repeat(len(actions), 1), emb_actions), 1)
-            val_sapairs = qsa(emb_sapairs)
+            val_sapairs = qsa(state, emb_actions)
+            print(actions)
+            print(val_sapairs.data.reshape(-1).to("cpu"))
 
         if t != 0:
             reference = reward if (curr_node == "termination") else (reward + gamma*val_sapairs.max().item())
-            val_sapair0 = qsa(torch.cat((state, emb(torch.tensor([action_to_ix[action]], dtype=torch.long).to(device))), 1))
+            val_sapair0 = qsa(state, emb(torch.tensor([action_to_ix[action]], dtype=torch.long).to(device)))
             # store the loss at each time step (to be used for optimization at the end of the episode)
             losses.append(nn.functional.smooth_l1_loss(val_sapair0, reference))
+            print(t, "    ", action, "    ", reference, "    ", val_sapair0)
 
         if curr_node == "termination":
             break
@@ -106,11 +120,11 @@ for m in range(M):
                 print(action, "  =====>  ", curr_node)
                 print("success" if reward == 1.0 else "failure")
                 print("success_rate:    ", float(success_rate))
-                print()
 
     optimizer.zero_grad()
     sum(losses).backward()
     optimizer.step()
+    print()
 
     if (m+1) % 10000 == 0:
         torch.save({"emb" : emb.state_dict(), "enc" : enc.state_dict(), "qsa" : qsa.state_dict(), "dec" : dec.state_dict()}, "checkpoints/save@{:07d}.pt".format(m+1))
