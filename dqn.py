@@ -7,6 +7,18 @@ import torch.optim as optim
 from transformers import AutoModel
 from utils import read_MetaQA_KG, read_MetaQA_Instances
 
+class ActionValueFunc(nn.Module):
+    def __init__(self, ndim_state, ndim_action):
+        super(ActionValueFunc, self).__init__()
+        self.state_transformation = nn.Sequential(nn.Linear(ndim_state,ndim_action))
+
+    def forward(self, state, emb_actions):
+        transformed_state = self.state_transformation(state)
+        vals = torch.sigmoid((transformed_state*emb_actions).sum(axis=-1))
+        # vals = (transformed_state*emb_actions).sum(axis=-1)
+        return vals
+
+
 torch.autograd.set_detect_anomaly(True)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ndim_state = 768
@@ -34,17 +46,6 @@ possible_actions.append("terminate")
 action_to_ix = dict(map(reversed, enumerate(possible_actions)))
 #---------------------------------------------------------------------
 
-class ActionValueFunc(nn.Module):
-    def __init__(self, ndim_state, ndim_action):
-        super(ActionValueFunc, self).__init__()
-        self.state_transformation = nn.Sequential(nn.Linear(ndim_state,ndim_action))
-
-    def forward(self, state, emb_actions):
-        transformed_state = self.state_transformation(state)
-        vals = torch.sigmoid((transformed_state*emb_actions).sum(axis=-1))
-        # vals = (transformed_state*emb_actions).sum(axis=-1)
-        return vals
-
 #---------------------------------------------------------------------
 # trainable model parameters
 #---------------------------------------------------------------------
@@ -58,6 +59,9 @@ qsa = ActionValueFunc(ndim_state, ndim_action).to(device)
 dec = nn.RNNCell(ndim_action, ndim_state).to(device)
 #---------------------------------------------------------------------
 
+emb_actions = lambda actions: emb(torch.tensor([action_to_ix[action] for action in actions], dtype=torch.long).to(device))
+unique = lambda items: list(set(items))
+
 optimizer = optim.Adam([{"params": emb.parameters(), "lr": 1.0e-4},
                         {"params": enc.parameters(), "lr": 1.0e-4},
                         {"params": qsa.parameters(), "lr": 1.0e-4},
@@ -68,58 +72,70 @@ for m in range(M):
 
     # question, tokenized_inputs, decorated_entity, answer_set = qa_train.sample(1).values[0]
     question, tokenized_inputs, decorated_entity, answer_set = qa_train[0]
-    print(question)
     assert decorated_entity in G.nodes
-    curr_node = decorated_entity
-    print(curr_node)
 
     # set initial values for state, action, and reward
-    state = enc(**tokenized_inputs)[1]
-    action = None
-    reward = None
+    curr_node = decorated_entity
+    curr_state = enc(**tokenized_inputs)[1]
+    curr_actions = None
+    curr_values = None
+
+    print(question)
+    print(curr_node)
 
     losses = []
-    for t in range(T+1):
-        if curr_node != "termination":
-            # available actions as going along one of the edges or terminate
-            actions = list(set([info["type"] for (curr_node, next_node, info) in G.edges(curr_node, data=True)])) + ["terminate"]
-            emb_actions = emb(torch.tensor([action_to_ix[action] for action in actions], dtype=torch.long).to(device))
-            val_sapairs = qsa(state, emb_actions)
-            print(actions)
-            print(val_sapairs.data.reshape(-1).to("cpu"))
-
-        if t != 0:
-            reference = reward if (curr_node == "termination") else (reward + gamma*val_sapairs.max().item())
-            val_sapair0 = qsa(state, emb(torch.tensor([action_to_ix[action]], dtype=torch.long).to(device)))
-            # store the loss at each time step (to be used for optimization at the end of the episode)
-            losses.append(nn.functional.smooth_l1_loss(val_sapair0, reference))
-            print(t, "    ", action, "    ", reference, "    ", val_sapair0)
-
-        if curr_node == "termination":
-            break
+    for t in range(T):
+        # compute the action value functions for available actions at the current node
+        if t == 0:
+            curr_actions = unique([info["type"] for (_, _, info) in G.edges(curr_node, data=True)]) + ["terminate"]
+            curr_value = qsa(curr_state, emb_actions(curr_actions))
         else:
-            if t == T-1:
-                action = "terminate"
-            else:
-                # selection action with epsilon-greedy policy
-                if random.random() < epsilon:
-                    action = random.choice(actions)
-                else:
-                    action = actions[val_sapairs.argmax()]
+            # values already computed
+            pass
 
-            # take the action
-            if action != "terminate":
-                reward = torch.tensor(0.0, device=device)
-                curr_node = random.choice(list(filter(lambda tp: tp[2]["type"] == action, G.edges(curr_node, data=True))))[1]
-                state = dec(emb(torch.tensor([action_to_ix[action]], dtype=torch.long).to(device)), state)
-                print(action, "  =====>  ", curr_node)
+        # select the action at the current time step
+        if t == T-1:
+            action = "terminate"
+        else:
+            # selection action with epsilon-greedy policy
+            if random.random() < epsilon:
+                action = random.choice(curr_actions)
             else:
-                reward = torch.tensor(1.0 if (re.match(r".+: (.+)", curr_node).group(1) in answer_set) else 0.0, device=device)
-                curr_node = "termination"
-                success_rate = 0.999*success_rate + 0.001*reward
-                print(action, "  =====>  ", curr_node)
-                print("success" if reward == 1.0 else "failure")
-                print("success_rate:    ", float(success_rate))
+                action = curr_actions[curr_values.argmax()]
+
+        # take the action
+        if action != "terminate":
+            reward = torch.tensor(0.0, device=device)
+            next_node = random.choice(list(filter(lambda tp: tp[2]["type"] == action, G.edges(curr_node, data=True))))[1]
+            next_state = dec(emb_actions([action]), curr_state)
+            print(action, "  =====>  ", next_node)
+        else:
+            reward = torch.tensor(1.0 if (re.match(r".+: (.+)", curr_node).group(1) in answer_set) else 0.0, device=device)
+            next_node = "termination"
+            next_state = None
+            print(action, "  =====>  ", next_node)
+
+        # temper difference error as loss of this step
+        if next_node != "termination":
+            next_actions = unique([info["type"] for (_, _, info) in G.edges(next_node, data=True)]) + ["terminate"]
+            next_values = qsa(next_state, emb_actions(next_actions))
+            reference = reward + gamma * next_values.max().item()
+        else:
+            next_actions = None
+            next_values = None
+            reference = reward
+        losses.append(nn.functional.smooth_l1_loss(qsa(curr_state, emb_actions([action])), reference))
+
+        if next_node != "termination":
+            curr_node = next_node
+            curr_state = next_state
+            curr_actions = next_actions
+            curr_values = next_values
+        else:
+            success_rate = 0.999*success_rate + 0.001*reward
+            print("success" if reward == 1.0 else "failure")
+            print("success_rate:    ", float(success_rate))
+            break
 
     optimizer.zero_grad()
     sum(losses).backward()
