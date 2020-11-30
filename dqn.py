@@ -60,7 +60,7 @@ dec = nn.RNNCell(ndim_action, ndim_state).to(device)
 #---------------------------------------------------------------------
 
 emb_actions = lambda actions: emb(torch.tensor([action_to_ix[action] for action in actions], dtype=torch.long).to(device))
-unique = lambda items: list(set(items))
+unique = lambda items: sorted(list(set(items)))
 
 optimizer = optim.Adam([{"params": emb.parameters(), "lr": 1.0e-4},
                         {"params": enc.parameters(), "lr": 1.0e-4},
@@ -98,51 +98,46 @@ for m in range(M):
         print(curr_actions)
         print(curr_values.data.reshape(-1).to("cpu"))
 
-        # select the action at the current time step
-        if t == T-1:
-            action = "terminate"
+        # select the action at the current time step with epsilon-greedy policy
+        if random.random() < epsilon:
+            action = random.choice(curr_actions)
         else:
-            # selection action with epsilon-greedy policy
-            if random.random() < epsilon:
-                action = random.choice(curr_actions)
-            else:
-                action = curr_actions[curr_values.argmax()]
+            action = curr_actions[curr_values.argmax()]
 
         # take the action
-        if action != "terminate":
-            reward = torch.tensor(0.0, device=device)
-            next_node = random.choice(list(filter(lambda tp: tp[2]["type"] == action, G.edges(curr_node, data=True))))[1]
-            next_state = dec(emb_actions([action]), curr_state)
-            print(action, "  =====>  ", next_node)
-        else:
+        if (action == "terminate") or (t == T-1):
             reward = torch.tensor(1.0 if (re.match(r".+: (.+)", curr_node).group(1) in answer_set) else 0.0, device=device)
             next_node = "termination"
             next_state = None
             print(action, "  =====>  ", next_node)
+        else:
+            reward = torch.tensor(0.0, device=device)
+            next_node = random.choice(list(filter(lambda tp: tp[2]["type"] == action, G.edges(curr_node, data=True))))[1]
+            next_state = dec(emb_actions([action]), curr_state)
+            print(action, "  =====>  ", next_node)
 
         # temper difference error as loss of this step
-        if next_node != "termination":
-            next_actions = unique([info["type"] for (_, _, info) in G.edges(next_node, data=True)]) + ["terminate"]
-            next_values = qsa(next_state, emb_actions(next_actions))
-            reference = reward + gamma * next_values.max().item()
-        else:
+        if next_node == "termination":
             next_actions = None
             next_values = None
             reference = reward
+        else:
+            next_actions = unique([info["type"] for (_, _, info) in G.edges(next_node, data=True)]) + ["terminate"]
+            next_values = qsa(next_state, emb_actions(next_actions))
+            reference = reward + gamma*next_values.max().item()
         losses.append(loss_func(qsa(curr_state, emb_actions([action])), reference))
-        # losses.append(abs(qsa(curr_state, emb_actions([action]) - reference)))
         print("    ", curr_node, "    ", action, "    ", qsa(curr_state, emb_actions([action]))[0].data.to("cpu"), "    ", reference.to("cpu"))
 
-        if next_node != "termination":
-            curr_node = next_node
-            curr_state = next_state
-            curr_actions = next_actions
-            curr_values = next_values
-        else:
+        if next_node == "termination":
             success_rate = 0.999*success_rate + 0.001*reward
             print("success" if reward == 1.0 else "failure")
             print("success_rate:    ", float(success_rate))
             break
+        else:
+            curr_node = next_node
+            curr_state = next_state
+            curr_actions = next_actions
+            curr_values = next_values
 
     optimizer.zero_grad()
     sum(losses).backward()
