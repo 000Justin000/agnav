@@ -3,6 +3,7 @@ import math
 import random
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from transformers import AutoModel
 from utils import read_MetaQA_KG, read_MetaQA_Instances
@@ -10,23 +11,22 @@ from utils import read_MetaQA_KG, read_MetaQA_Instances
 class ActionValueFunc(nn.Module):
     def __init__(self, ndim_state, ndim_action):
         super(ActionValueFunc, self).__init__()
-        self.state_transformation = nn.Sequential(nn.Linear(ndim_state,ndim_action))
+        self.state_transformation = nn.Sequential(nn.Linear(ndim_state,ndim_action), nn.Tanh())
 
     def forward(self, state, emb_actions):
         transformed_state = self.state_transformation(state)
-        # vals = torch.sigmoid((transformed_state*emb_actions).sum(axis=-1))
-        vals = (transformed_state*emb_actions).sum(axis=-1)
+        vals = F.softplus(F.cosine_similarity(transformed_state, emb_actions), beta=10)
         return vals
 
 
 torch.autograd.set_detect_anomaly(True)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ndim_state = 768
-ndim_action = 128
+ndim_action = 768
 gamma = 0.90
 epsilon_start = 1.00
-epsilon_end = 0.10
-M = 1000000
+epsilon_end = 0.30
+M = 10000
 epsilon_decay = 0.2*M
 T = 3
 
@@ -56,24 +56,25 @@ enc = AutoModel.from_pretrained("bert-base-uncased").to(device)
 # action value function
 qsa = ActionValueFunc(ndim_state, ndim_action).to(device)
 # state transation function
-dec = nn.RNNCell(ndim_action, ndim_state).to(device)
+dec = nn.GRUCell(ndim_action, ndim_state).to(device)
 #---------------------------------------------------------------------
 
 emb_actions = lambda actions: emb(torch.tensor([action_to_ix[action] for action in actions], dtype=torch.long).to(device))
 unique = lambda items: sorted(list(set(items)))
 
-optimizer = optim.Adam([{"params": emb.parameters(), "lr": 1.0e-4},
-                        {"params": enc.parameters(), "lr": 1.0e-4},
-                        {"params": qsa.parameters(), "lr": 1.0e-4},
-                        {"params": dec.parameters(), "lr": 1.0e-4}])
+optimizer = optim.Adam([{"params": emb.parameters(), "lr": 1.0e-5},
+                        {"params": enc.parameters(), "lr": 0.0e-5},
+                        {"params": qsa.parameters(), "lr": 1.0e-5},
+                        {"params": dec.parameters(), "lr": 1.0e-5}])
 loss_func = nn.L1Loss()
 
 success_rate = 0.0
 for m in range(M):
     epsilon = epsilon_end + (epsilon_start-epsilon_end) * math.exp(-m/epsilon_decay)
 
-    question, tokenized_inputs, decorated_entity, answer_set = qa_train.sample(1).values[0]
-    # question, tokenized_inputs, decorated_entity, answer_set = qa_train[0]
+    # question, tokenized_inputs, decorated_entity, answer_set = qa_train.sample(1).values[0]
+    question, tokenized_inputs, decorated_entity, answer_set = qa_train[[0,12570,22542,34419,35610,51705,75016]].sample(1).values[0]
+    # question, tokenized_inputs, decorated_entity, answer_set = qa_train[[12570,22542]].sample(1).values[0]
     assert decorated_entity in G.nodes
 
     # set initial values for state, action, and reward
@@ -84,6 +85,7 @@ for m in range(M):
 
     print(question)
     print(curr_node)
+    print("epsilon = {:5.3f}".format(epsilon))
 
     losses = []
     for t in range(T):
