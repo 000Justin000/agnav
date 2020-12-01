@@ -40,10 +40,9 @@ ndim_action = 768
 T = 3
 gamma = 0.90
 epsilon_start = 1.00
-epsilon_end = 0.30
+epsilon_end = 0.10
 decay_rate = 5.00
-M = 10000
-memory_size = 100
+M = 100000
 #---------------------------------------------------------------------
 
 #---------------------------------------------------------------------
@@ -77,11 +76,11 @@ dec = nn.GRUCell(ndim_action, ndim_context).to(device)
 #---------------------------------------------------------------------
 # optimizer setup
 #---------------------------------------------------------------------
-optimizer = optim.Adam([{"params": emb.parameters(), "lr": 1.0e-5},
-                        {"params": enc.parameters(), "lr": 0.0e-5},
-                        {"params": qsa.parameters(), "lr": 1.0e-5},
-                        {"params": dec.parameters(), "lr": 1.0e-5}])
-loss_func = nn.L1Loss()
+optimizer = optim.Adam([{"params": emb.parameters(), "lr": 1.0e-4},
+                        {"params": enc.parameters(), "lr": 0.0e-4},
+                        {"params": qsa.parameters(), "lr": 1.0e-4},
+                        {"params": dec.parameters(), "lr": 1.0e-4}])
+loss_func = nn.MSELoss()
 #---------------------------------------------------------------------
 
 
@@ -91,9 +90,9 @@ def emb_actions(actions):
 
 def simulate_episode(epsilon):
 
-    # qa_instance = qa_train.sample(1).values[0]
+    qa_instance = qa_train.sample(1).values[0]
     # qa_instance = qa_train[[0,12570,22542,34419,35610,51705,75016]].sample(1).values[0]
-    qa_instance = qa_train[[12570,22542]].sample(1).values[0]
+    # qa_instance = qa_train[[12570,22542]].sample(1).values[0]
     question, tokenized_inputs, decorated_entity, answer_set = qa_instance
     assert decorated_entity in G.nodes
 
@@ -165,8 +164,6 @@ def replay_episode(episode):
             actions_next = unique([info["type"] for (_, _, info) in G.edges(kgnode_next, data=True)]) + ["terminate"]
             values_next = qsa(context_next, emb_actions(actions_next))
             reference = reward + gamma*values_next.max().item()
-            print(actions_next)
-            print(values_next.data.reshape(-1).to("cpu"))
         else:
             reference = reward
 
@@ -178,30 +175,44 @@ def replay_episode(episode):
 
     return sum(losses)
 
-
-memory_overall = ReplayMemory(memory_size)
-memory_success = ReplayMemory(memory_size)
+memory_overall = ReplayMemory(1000)
+memory_success = ReplayMemory(1000)
+success_rate = 0.0
 for m in range(M):
     epsilon = epsilon_end + (epsilon_start-epsilon_end) * math.exp(-decay_rate*(m/M))
     print("epsilon: {:5.3f}".format(epsilon))
 
     with torch.no_grad():
         qa_instance, kgnode_chain, action_chain, reward_chain = simulate_episode(epsilon)
+    print("success" if reward_chain[-1] == 1.0 else "failure")
+    print()
 
+    success_rate = 0.999*success_rate + 0.001*reward_chain[-1]
+    print("success_rate: {:5.3f}".format(success_rate))
     print()
 
     memory_overall.push(Episode(qa_instance, kgnode_chain, action_chain, reward_chain))
     if reward_chain[-1] == 1.0:
         memory_success.push(Episode(qa_instance, kgnode_chain, action_chain, reward_chain))
 
-    loss = replay_episode(memory_overall.sample_last(1)[0])
+    last_episode = memory_overall.sample_last(1)[0]
+    for t in range(T):
+        loss = replay_episode(last_episode)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        print()
 
-    print()
+    if (len(memory_success) > 0) and (random.randm() < 0.3):
+        succeed_episode = memory_success.sample_random(1)[0]
+        for t in range(T):
+            loss = replay_episode(succeed_episode)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            print()
+
     print(flush=True)
-
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
 
     if (m+1) % 10000 == 0:
         torch.save({"emb" : emb.state_dict(), "enc" : enc.state_dict(), "qsa" : qsa.state_dict(), "dec" : dec.state_dict()}, "checkpoints/save@{:07d}.pt".format(m+1))
