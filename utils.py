@@ -5,6 +5,13 @@ import torch
 from collections import namedtuple
 from transformers import AutoTokenizer
 
+QAInstance = namedtuple("QAInstance", ["question", "tokenized_inputs", "decorated_entity", "answer_set"])
+Episode = namedtuple("Episode", ["qa_instance", "kgnode_chain", "action_chain", "reward_chain"])
+
+def unique(items):
+    return sorted(list(set(items)))
+
+
 def read_MetaQA_KG():
 
     def edge_to_prefix(edge):
@@ -44,9 +51,8 @@ def read_MetaQA_KG():
 
     return G
 
-def read_MetaQA_Instances(question_type="1-hop"):
-    QAInstance = namedtuple("QAInstance", ["question", "tokenized_inputs", "decorated_entity", "answer_set"])
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+def read_MetaQA_Instances(question_type="1-hop", device="cpu"):
     entity_token = "[unused0]"
     tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", additional_special_tokens=[entity_token])
 
@@ -93,3 +99,31 @@ def read_MetaQA_Instances(question_type="1-hop"):
     #-------------------------------------------------------------------------------------
 
     return qa_instance_train, qa_instance_dev, qa_instance_test
+
+
+class ReplayMemory:
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.memory = []
+        self.position = 0
+
+    def push(self, episode):
+        if len(self.memory) < self.capacity:
+            self.memory.append(None)
+        self.memory[self.position] = episode
+        self.position = (self.position + 1) % self.capacity
+
+    def sample_random(self, batch_size):
+        batch = random.sample(self.memory, batch_size)
+        return batch
+
+    def sample_last(self, batch_size):
+        pointer = self.position
+        batch = []
+        for _ in range(batch_size):
+            pointer = (pointer - 1 + self.capacity) % self.capacity
+            batch.append(self.memory[pointer])
+        return batch
+
+    def __len__(self):
+        return len(self.memory)
