@@ -203,7 +203,7 @@ for m in range(M):
         optimizer.step()
         print()
 
-    if (len(memory_success) > 0) and (random.randm() < 0.3):
+    if (len(memory_success) > 0) and (random.random() < 0.3):
         succeed_episode = memory_success.sample_random(1)[0]
         for t in range(T):
             loss = replay_episode(succeed_episode)
