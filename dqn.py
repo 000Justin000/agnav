@@ -37,19 +37,25 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 #---------------------------------------------------------------------
 ndim_context = 768
 ndim_action = 768
-T = 3
+T = 4
 gamma = 0.90
 epsilon_start = 1.00
 epsilon_end = 0.10
 decay_rate = 5.00
-M = 100000
+M = 500000
 #---------------------------------------------------------------------
 
 #---------------------------------------------------------------------
 # get the knowledge graph, question/answers instances
 #---------------------------------------------------------------------
 G = read_MetaQA_KG()
-qa_train, qa_dev, qa_test = read_MetaQA_Instances("1-hop", device)
+qa_train_1h, qa_dev_1h, qa_test_1h = read_MetaQA_Instances("1-hop", device)
+qa_train_2h, qa_dev_2h, qa_test_2h = read_MetaQA_Instances("2-hop", device)
+qa_train_3h, qa_dev_3h, qa_test_3h = read_MetaQA_Instances("3-hop", device)
+#---------------------------------------------------------------------
+qa_train = pd.concat([qa_train_1h, qa_train_2h, qa_train_3h])
+qa_dev   = pd.concat([qa_dev_1h, qa_dev_2h, qa_dev_3h])
+qa_test  = pd.concat([qa_test_1h, qa_test_2h, qa_test_3h])
 #---------------------------------------------------------------------
 
 #---------------------------------------------------------------------
@@ -76,10 +82,10 @@ dec = nn.GRUCell(ndim_action, ndim_context).to(device)
 #---------------------------------------------------------------------
 # optimizer setup
 #---------------------------------------------------------------------
-optimizer = optim.Adam([{"params": emb.parameters(), "lr": 1.0e-4},
-                        {"params": enc.parameters(), "lr": 0.0e-4},
-                        {"params": qsa.parameters(), "lr": 1.0e-4},
-                        {"params": dec.parameters(), "lr": 1.0e-4}])
+optimizer = optim.AdamW([{"params": emb.parameters(), "lr": 1.0e-4},
+                         {"params": enc.parameters(), "lr": 1.0e-4},
+                         {"params": qsa.parameters(), "lr": 1.0e-4},
+                         {"params": dec.parameters(), "lr": 1.0e-4}], betas=(0.9, 0.999), weight_decay=2.5e-4)
 loss_func = nn.MSELoss()
 #---------------------------------------------------------------------
 
@@ -167,7 +173,7 @@ def replay_episode(episode):
         else:
             reference = reward
 
-        losses.append(loss_func(qsa(context, emb_actions([action])), reference))
+        losses.append(loss_func(qsa(context, emb_actions([action]))[0], reference))
         print("    ", kgnode, "    ", action, "    ", qsa(context, emb_actions([action]))[0].data.to("cpu"), "    ", reference.to("cpu"))
 
         if t != len(kgnode_chain)-1:
@@ -203,14 +209,14 @@ for m in range(M):
         optimizer.step()
         print()
 
-    if (len(memory_success) > 0) and (random.random() < 0.3):
-        succeed_episode = memory_success.sample_random(1)[0]
-        for t in range(T):
-            loss = replay_episode(succeed_episode)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            print()
+#   if (len(memory_success) > 0) and (random.random() < 0.3):
+#       succeed_episode = memory_success.sample_random(1)[0]
+#       for t in range(T):
+#           loss = replay_episode(succeed_episode)
+#           optimizer.zero_grad()
+#           loss.backward()
+#           optimizer.step()
+#           print()
 
     print(flush=True)
 
