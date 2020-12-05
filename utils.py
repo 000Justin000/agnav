@@ -9,6 +9,7 @@ from transformers import AutoTokenizer
 QAInstance = namedtuple("QAInstance", ["question", "tokenized_inputs", "decorated_entity", "answer_set"])
 Episode = namedtuple("Episode", ["qa_instance", "kgnode_chain", "action_chain", "reward_chain"])
 
+
 def unique(items):
     return sorted(list(set(items)))
 
@@ -58,46 +59,41 @@ def read_MetaQA_Instances(question_type="1-hop", device="cpu"):
     tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", additional_special_tokens=[entity_token])
 
     def process_question(question):
-        #---------------------------------------------------------------------------------
         processed_question = re.sub(r"(\[.+\])", entity_token, question)
         entity = re.search(r"\[(.+)\]", question).group(1)
-        #---------------------------------------------------------------------------------
         return processed_question, entity
 
     def process_answers(answers):
         return set(answers.split('|'))
 
     def info_to_instance(info):
-        #---------------------------------------------------------------------------------
         processed_question, entity = process_question(info["question"])
-        #---------------------------------------------------------------------------------
+
         tokenized_inputs = tokenizer(processed_question, return_tensors="pt")
         tokenized_inputs["input_ids"] = tokenized_inputs["input_ids"].to(device)
         tokenized_inputs["token_type_ids"] = tokenized_inputs["token_type_ids"].to(device)
         tokenized_inputs["attention_mask"] = tokenized_inputs["attention_mask"].to(device)
-        #---------------------------------------------------------------------------------
+
         decorated_entity = info["question_type"].split('_')[0] + ": " + entity
-        #---------------------------------------------------------------------------------
+
         answer_set = process_answers(info["answers"])
-        #---------------------------------------------------------------------------------
+
         return QAInstance(info["question"], tokenized_inputs, decorated_entity, answer_set)
 
-    #-------------------------------------------------------------------------------------
     qa_text_train = pd.read_csv("datasets/MetaQA/"+question_type+"/vanilla/qa_train.txt", delimiter='\t', names=["question", "answers"])
     qa_qtype_train = pd.read_csv("datasets/MetaQA/"+question_type+"/qa_train_qtype.txt", names=["question_type"])
     qa_info_train = pd.concat([qa_text_train, qa_qtype_train], axis=1)
     qa_instance_train = qa_info_train.apply(info_to_instance, axis=1)
-    #-------------------------------------------------------------------------------------
+
     qa_text_dev = pd.read_csv("datasets/MetaQA/"+question_type+"/vanilla/qa_dev.txt", delimiter='\t', names=["question", "answers"])
     qa_qtype_dev = pd.read_csv("datasets/MetaQA/"+question_type+"/qa_dev_qtype.txt", names=["question_type"])
     qa_info_dev = pd.concat([qa_text_dev, qa_qtype_dev], axis=1)
     qa_instance_dev = qa_info_dev.apply(info_to_instance, axis=1)
-    #-------------------------------------------------------------------------------------
+
     qa_text_test = pd.read_csv("datasets/MetaQA/"+question_type+"/vanilla/qa_test.txt", delimiter='\t', names=["question", "answers"])
     qa_qtype_test = pd.read_csv("datasets/MetaQA/"+question_type+"/qa_test_qtype.txt", names=["question_type"])
     qa_info_test = pd.concat([qa_text_test, qa_qtype_test], axis=1)
     qa_instance_test = qa_info_test.apply(info_to_instance, axis=1)
-    #-------------------------------------------------------------------------------------
 
     return qa_instance_train, qa_instance_dev, qa_instance_test
 

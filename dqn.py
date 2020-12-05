@@ -42,7 +42,7 @@ gamma = 0.90
 epsilon_start = 1.00
 epsilon_end = 0.10
 decay_rate = 5.00
-M = 500000
+M = 10000
 #---------------------------------------------------------------------
 
 #---------------------------------------------------------------------
@@ -221,4 +221,4 @@ for m in range(M):
     print(flush=True)
 
     if (m+1) % 10000 == 0:
-        torch.save({"emb" : emb.state_dict(), "enc" : enc.state_dict(), "qsa" : qsa.state_dict(), "dec" : dec.state_dict()}, "checkpoints/save@{:07d}.pt".format(m+1))
+        torch.save({"emb": emb.state_dict(), "enc": enc.state_dict(), "qsa": qsa.state_dict(), "dec": dec.state_dict()}, "checkpoints/save@{:07d}.pt".format(m+1))

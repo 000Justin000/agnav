@@ -1,10 +1,17 @@
 import torch
-from transformers import AutoTokenizer, AutoModel
+from transformers import GPT2Tokenizer, GPT2Model
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+model = GPT2Model.from_pretrained('gpt2')
 
-tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
-model = AutoModel.from_pretrained("bert-base-uncased").to(device)
-
-inputs = tokenizer("Hello world!", return_tensors="pt")
-outputs = model(input_ids=inputs["input_ids"].to(device), token_type_ids=inputs["token_type_ids"].to(device), attention_mask=inputs["attention_mask"].to(device))
+# Add a [CLS] to the vocabulary (we should train it also!)
+num_added_tokens = tokenizer.add_special_tokens({'cls_token': '[TRG]'})
+embedding_layer = model.resize_token_embeddings(len(tokenizer))  # Update the model embeddings with the new vocabulary size
+choices = ["Hello, my dog is cute [CLS]", "Hello, my cat is cute [CLS]"]
+encoded_choices = [tokenizer.encode(s) for s in choices]
+cls_token_location = [tokens.index(tokenizer.cls_token_id) for tokens in encoded_choices]
+input_ids = torch.tensor(encoded_choices).unsqueeze(0)  # Batch size: 1, number of choices: 2
+mc_token_ids = torch.tensor([cls_token_location])  # Batch size: 1
+outputs = model(input_ids, mc_token_ids=mc_token_ids)
+lm_logits = outputs.lm_logits
+mc_logits = outputs.mc_logits
