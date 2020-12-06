@@ -350,17 +350,41 @@ def make_batch(episodes, tokenizer, action_to_ix, pad_index=0, sos_index=1):
     return Batch((src, src_lengths), (trg, trg_lengths), pad_index=pad_index), kgnode_chains, action_chains, reward_chains
 
 
-if __name__ == "__main__":
+def compute_loss(episodes, tokenizer, model, action_to_ax):
 
-    # train_copy_task()
+    batch, kgnode_chains, action_chains, reward_chains = make_batch(episodes, tokenizer, action_to_ix)
+    _, _, pre_output = model.forward(batch.src, batch.trg, batch.src_mask, batch.trg_mask, batch.src_lengths, batch.trg_lengths)
+
+    batch_values = model.q_function(pre_output)
+
+    losses = []
+    for (i, (kgnode_chain, action_chain, reward_chain)) in enumerate(zip(kgnode_chains, action_chains, reward_chains)):
+        for t in range(len(kgnode_chain)):
+            kgnode, action, reward = kgnode_chain[t], action_chain[t], reward_chain[t]
+
+            if t != len(kgnode_chain)-1:
+                kgnode_next = kgnode_chain[t+1]
+                actions_next = unique([info["type"] for (_, _, info) in G.edges(kgnode_next, data=True)]) + ["terminate"]
+                values_next = batch_values[i, t+1, [action_to_ix[action] for action in actions_next]]
+                reference = reward + gamma*values_next.max().item()
+            else:
+                reference = reward
+
+            losses.append(loss_func(batch_values[i, t, action_to_ix[action]], reference))
+            print("    ", kgnode, "    ", action, "    ", batch_values[i, t, action_to_ix[action]].data.to("cpu").item(), "    ", reference.to("cpu").item())
+
+    return sum(losses)
+
+
+if __name__ == "__main__":
 
     max_len = 3
     gamma = 0.90
     epsilon_start = 1.00
     epsilon_end = 0.10
     decay_rate = 5.00
-    M = 10
-    batch_size = 2
+    M = 10000
+    batch_size = 1
 
     entity_token = "[ETY]"
     tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", additional_special_tokens=[entity_token])
@@ -382,7 +406,7 @@ if __name__ == "__main__":
     possible_actions = ["[PAD]", "[SOS]"] + sorted(list(set([edge[2]["type"] for edge in G.edges(data=True)]))) + ["terminate"]
     action_to_ix = dict(map(reversed, enumerate(possible_actions)))
 
-    model = make_model(len(tokenizer), len(possible_actions), emb_size=32, hidden_size=64, dropout=0.0)
+    model = make_model(len(tokenizer), len(possible_actions), emb_size=32, hidden_size=64, dropout=0.0).to(DEVICE)
     loss_func = nn.MSELoss()
     optimizer = optim.AdamW(model.parameters(), betas=(0.9, 0.999), weight_decay=2.5e-4)
 
@@ -405,29 +429,26 @@ if __name__ == "__main__":
         print()
 
         memory_overall.push(Episode(qa_instance, kgnode_chain, action_chain, reward_chain))
+        if reward_chain[-1] == 1.0:
+            memory_success.push(Episode(qa_instance, kgnode_chain, action_chain, reward_chain))
 
-        # model training
-        batch, kgnode_chains, action_chains, reward_chains = make_batch(memory_overall.sample_last(batch_size), tokenizer, action_to_ix)
-        out, _, pre_output = model.forward(batch.src, batch.trg, batch.src_mask, batch.trg_mask, batch.src_lengths, batch.trg_lengths)
+        episodes = memory_overall.sample_last(batch_size)
+        for t in range(max_len):
+            # optimize model
+            loss = compute_loss(episodes, tokenizer, model, action_to_ix)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            print()
 
-        batch_values = model.q_function(pre_output)
+#       if (len(memory_success) > 0):
+#           succeed_episodes = memory_success.sample_random(batch_size)
+#           for t in range(T):
+#               loss = compute_loss(episodes, tokenizer, model, action_to_ix)
+#               optimizer.zero_grad()
+#               loss.backward()
+#               optimizer.step()
+#               print()
 
-        losses = []
-        for (i, (kgnode_chain, action_chain, reward_chain)) in enumerate(zip(kgnode_chains, action_chains, reward_chains)):
-            for t in range(len(kgnode_chain)):
-                kgnode, action, reward = kgnode_chain[t], action_chain[t], reward_chain[t]
-
-                if t != len(kgnode_chain)-1:
-                    kgnode_next = kgnode_chain[t+1]
-                    actions_next = unique([info["type"] for (_, _, info) in G.edges(kgnode_next, data=True)]) + ["terminate"]
-                    values_next = batch_values[i, t+1, [action_to_ix[action] for action in actions_next]]
-                    reference = reward + gamma*values_next.max().item()
-                else:
-                    reference = reward
-
-                losses.append(loss_func(batch_values[i, t, action_to_ix[action]], reference))
-                print("    ", kgnode, "    ", action, "    ", batch_values[i, t, action_to_ix[action]].data.to("cpu"), "    ", reference.to("cpu"))
-
-        optimizer.zero_grad()
-        sum(losses).backward()
-        optimizer.step()
+        print()
+        print(flush=True)

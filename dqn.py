@@ -53,9 +53,17 @@ qa_train_1h, qa_dev_1h, qa_test_1h = read_MetaQA_Instances("1-hop", device)
 qa_train_2h, qa_dev_2h, qa_test_2h = read_MetaQA_Instances("2-hop", device)
 qa_train_3h, qa_dev_3h, qa_test_3h = read_MetaQA_Instances("3-hop", device)
 #---------------------------------------------------------------------
-qa_train = pd.concat([qa_train_1h, qa_train_2h, qa_train_3h])
-qa_dev   = pd.concat([qa_dev_1h, qa_dev_2h, qa_dev_3h])
-qa_test  = pd.concat([qa_test_1h, qa_test_2h, qa_test_3h])
+qa_train = pd.concat([qa_train_1h])
+qa_dev   = pd.concat([qa_dev_1h])
+qa_test  = pd.concat([qa_test_1h])
+#---------------------------------------------------------------------
+# qa_train = pd.concat([qa_train_1h, qa_train_2h])
+# qa_dev   = pd.concat([qa_dev_1h, qa_dev_2h])
+# qa_test  = pd.concat([qa_test_1h, qa_test_2h])
+#---------------------------------------------------------------------
+# qa_train = pd.concat([qa_train_1h, qa_train_2h, qa_train_3h])
+# qa_dev   = pd.concat([qa_dev_1h, qa_dev_2h, qa_dev_3h])
+# qa_test  = pd.concat([qa_test_1h, qa_test_2h, qa_test_3h])
 #---------------------------------------------------------------------
 
 #---------------------------------------------------------------------
