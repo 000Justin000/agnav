@@ -1,17 +1,19 @@
+import os
 import torch
 from transformers import GPT2Tokenizer, GPT2Model
 
-tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
-model = GPT2Model.from_pretrained('gpt2')
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
-# Add a [CLS] to the vocabulary (we should train it also!)
-num_added_tokens = tokenizer.add_special_tokens({'cls_token': '[TRG]'})
+# tokenizer.tokenize
+# tokenize.encode
+# tokenize.forward
+tokenizer = GPT2Tokenizer.from_pretrained('gpt2', pad_token="[PAD]", additional_special_tokens=["[OBJ]"])
+model = GPT2Model.from_pretrained('gpt2')
 embedding_layer = model.resize_token_embeddings(len(tokenizer))  # Update the model embeddings with the new vocabulary size
-choices = ["Hello, my dog is cute [CLS]", "Hello, my cat is cute [CLS]"]
-encoded_choices = [tokenizer.encode(s) for s in choices]
-cls_token_location = [tokens.index(tokenizer.cls_token_id) for tokens in encoded_choices]
-input_ids = torch.tensor(encoded_choices).unsqueeze(0)  # Batch size: 1, number of choices: 2
-mc_token_ids = torch.tensor([cls_token_location])  # Batch size: 1
-outputs = model(input_ids, mc_token_ids=mc_token_ids)
-lm_logits = outputs.lm_logits
-mc_logits = outputs.mc_logits
+inputs = tokenizer("who is the writer for [OBJ]", max_length=50, padding="max_length", truncation=True, return_tensors='pt')
+outputs = model(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"])
+
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", additional_special_tokens=["[OBJ]"])
+inputs = tokenizer("who is the writer for [OBJ]", max_length=10, padding="max_length", truncation=True, return_tensors='pt')

@@ -6,8 +6,36 @@ import torch
 from collections import namedtuple
 from transformers import AutoTokenizer
 
-QAInstance = namedtuple("QAInstance", ["question", "tokenized_inputs", "decorated_entity", "answer_set"])
+QAInstance = namedtuple("QAInstance", ["question", "decorated_entity", "answer_set"])
 Episode = namedtuple("Episode", ["qa_instance", "kgnode_chain", "action_chain", "reward_chain"])
+
+
+class ReplayMemory:
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.memory = []
+        self.position = 0
+
+    def push(self, episode):
+        if len(self.memory) < self.capacity:
+            self.memory.append(None)
+        self.memory[self.position] = episode
+        self.position = (self.position + 1) % self.capacity
+
+    def sample_random(self, batch_size):
+        batch = random.choices(self.memory, k=batch_size)
+        return batch
+
+    def sample_last(self, batch_size):
+        pointer = self.position
+        batch = []
+        for _ in range(batch_size):
+            pointer = (pointer - 1 + len(self.memory)) % len(self.memory)
+            batch.append(self.memory[pointer])
+        return batch
+
+    def __len__(self):
+        return len(self.memory)
 
 
 def unique(items):
@@ -54,9 +82,7 @@ def read_MetaQA_KG():
     return G
 
 
-def read_MetaQA_Instances(question_type="1-hop", device="cpu"):
-    entity_token = "[unused0]"
-    tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", additional_special_tokens=[entity_token])
+def read_MetaQA_Instances(question_type="1-hop", entity_token="[ETY]", device="cpu"):
 
     def process_question(question):
         processed_question = re.sub(r"(\[.+\])", entity_token, question)
@@ -69,16 +95,16 @@ def read_MetaQA_Instances(question_type="1-hop", device="cpu"):
     def info_to_instance(info):
         processed_question, entity = process_question(info["question"])
 
-        tokenized_inputs = tokenizer(processed_question, return_tensors="pt")
-        tokenized_inputs["input_ids"] = tokenized_inputs["input_ids"].to(device)
-        tokenized_inputs["token_type_ids"] = tokenized_inputs["token_type_ids"].to(device)
-        tokenized_inputs["attention_mask"] = tokenized_inputs["attention_mask"].to(device)
+        # tokenized_inputs = tokenizer(processed_question, max_length=50, padding="max_length", truncation=True, return_tensors="pt")
+        # tokenized_inputs["input_ids"] = tokenized_inputs["input_ids"].to(device)
+        # tokenized_inputs["token_type_ids"] = tokenized_inputs["token_type_ids"].to(device)
+        # tokenized_inputs["attention_mask"] = tokenized_inputs["attention_mask"].to(device)
 
         decorated_entity = info["question_type"].split('_')[0] + ": " + entity
 
         answer_set = process_answers(info["answers"])
 
-        return QAInstance(info["question"], tokenized_inputs, decorated_entity, answer_set)
+        return QAInstance(processed_question, decorated_entity, answer_set)
 
     qa_text_train = pd.read_csv("datasets/MetaQA/"+question_type+"/vanilla/qa_train.txt", delimiter='\t', names=["question", "answers"])
     qa_qtype_train = pd.read_csv("datasets/MetaQA/"+question_type+"/qa_train_qtype.txt", names=["question_type"])
@@ -96,31 +122,3 @@ def read_MetaQA_Instances(question_type="1-hop", device="cpu"):
     qa_instance_test = qa_info_test.apply(info_to_instance, axis=1)
 
     return qa_instance_train, qa_instance_dev, qa_instance_test
-
-
-class ReplayMemory:
-    def __init__(self, capacity):
-        self.capacity = capacity
-        self.memory = []
-        self.position = 0
-
-    def push(self, episode):
-        if len(self.memory) < self.capacity:
-            self.memory.append(None)
-        self.memory[self.position] = episode
-        self.position = (self.position + 1) % self.capacity
-
-    def sample_random(self, batch_size):
-        batch = random.sample(self.memory, batch_size)
-        return batch
-
-    def sample_last(self, batch_size):
-        pointer = self.position
-        batch = []
-        for _ in range(batch_size):
-            pointer = (pointer - 1 + self.capacity) % self.capacity
-            batch.append(self.memory[pointer])
-        return batch
-
-    def __len__(self):
-        return len(self.memory)
