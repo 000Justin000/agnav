@@ -266,15 +266,17 @@ class SimpleLossCompute:
         return loss.data.item() * norm
 
 
-def simulate_episode(G, qa_instance, model, action_to_ix, max_len, epsilon):
+def simulate_episode(G, qa_instance, model, action_to_ix, max_len, epsilon, verbose=False):
 
     question, decorated_entity, answer_set = qa_instance
     tokenized_inputs = tokenizer(question, max_length=50, padding=True, truncation=True, return_tensors="pt")
     src, src_mask = tokenized_inputs["input_ids"].to(DEVICE), tokenized_inputs["attention_mask"].unsqueeze(-2).to(DEVICE)
     assert decorated_entity in G.nodes
     kgnode = decorated_entity
-    print(question)
-    print(kgnode)
+
+    if verbose:
+        print(question)
+        print(kgnode)
 
     kgnode_chain = []
     action_chain = []
@@ -288,17 +290,14 @@ def simulate_episode(G, qa_instance, model, action_to_ix, max_len, epsilon):
     proj_key = model.decoder.attention.key_layer(encoder_hidden)
 
     # initialize decoder hidden state
-    init_hidden = model.decoder.init_hidden(encoder_final)
-    init_embed = model.trg_embed(torch.tensor([action_to_ix["[SOS]"]], device=DEVICE)).unsqueeze(1)
-    _, context, _ = model.decoder.forward_step(init_embed, encoder_hidden, src_mask, proj_key, init_hidden)
+    hidden_init = model.decoder.init_hidden(encoder_final)
+    sos_embed = model.trg_embed(torch.tensor([action_to_ix["[SOS]"]], device=DEVICE)).unsqueeze(1)
+    _, hidden, context = model.decoder.forward_step(sos_embed, encoder_hidden, src_mask, proj_key, hidden_init)
 
     for t in range(max_len):
         # compute the action value functions for available actions at the current node
         actions = unique([info["type"] for (_, _, info) in G.edges(kgnode, data=True)]) + ["terminate"]
         values = model.q_function(context)[0, 0, [action_to_ix[action] for action in actions]]
-
-        print(actions)
-        print(values.data.reshape(-1).to("cpu"))
 
         # select the action at the current time step with epsilon-greedy policy
         if random.random() < epsilon:
@@ -308,28 +307,33 @@ def simulate_episode(G, qa_instance, model, action_to_ix, max_len, epsilon):
 
         # take the action
         if (action == "terminate") or (t == max_len-1):
-            reward = torch.tensor(1.0 if (re.match(r".+: (.+)", kgnode).group(1) in answer_set) else 0.0).to(DEVICE)
+            reward = torch.tensor(1.0 if ((action == "terminate") and (re.match(r".+: (.+)", kgnode).group(1) in answer_set)) else 0.0).to(DEVICE)
             kgnode_next = "termination"
+            hidden_next = None
             context_next = None
-            print(action, "  =====>  ", kgnode_next)
         else:
             reward = torch.tensor(0.0).to(DEVICE)
             kgnode_next = random.choice(list(filter(lambda tp: tp[2]["type"] == action, G.edges(kgnode, data=True))))[1]
             action_embed = model.trg_embed(torch.tensor([action_to_ix[action]], device=DEVICE)).unsqueeze(1)
-            _, context_next, _ = model.decoder.forward_step(action_embed, encoder_hidden, src_mask, proj_key, context)
-            print(action, "  =====>  ", kgnode_next)
+            _, hidden_next, context_next = model.decoder.forward_step(action_embed, encoder_hidden, src_mask, proj_key, hidden)
 
         kgnode_chain.append(kgnode)
         action_chain.append(action)
         reward_chain.append(reward)
 
+        if verbose:
+            print(actions)
+            print(values.data.reshape(-1).to("cpu"))
+            print(action, "  =====>  ", kgnode_next)
+
         if kgnode_next == "termination":
             break
         else:
             kgnode = kgnode_next
+            hidden = hidden_next
             context = context_next
 
-    return qa_instance, kgnode_chain, action_chain, reward_chain
+    return kgnode_chain, action_chain, reward_chain
 
 
 def make_batch(episodes, tokenizer, action_to_ix, pad_index=0, sos_index=1):
@@ -350,7 +354,7 @@ def make_batch(episodes, tokenizer, action_to_ix, pad_index=0, sos_index=1):
     return Batch((src, src_lengths), (trg, trg_lengths), pad_index=pad_index), kgnode_chains, action_chains, reward_chains
 
 
-def compute_loss(episodes, tokenizer, model, action_to_ax):
+def compute_loss(episodes, tokenizer, model, action_to_ax, verbose=False):
 
     batch, kgnode_chains, action_chains, reward_chains = make_batch(episodes, tokenizer, action_to_ix)
     _, _, pre_output = model.forward(batch.src, batch.trg, batch.src_mask, batch.trg_mask, batch.src_lengths, batch.trg_lengths)
@@ -371,20 +375,32 @@ def compute_loss(episodes, tokenizer, model, action_to_ax):
                 reference = reward
 
             losses.append(loss_func(batch_values[i, t, action_to_ix[action]], reference))
-            print("    ", kgnode, "    ", action, "    ", batch_values[i, t, action_to_ix[action]].data.to("cpu").item(), "    ", reference.to("cpu").item())
+            if verbose:
+                print("    {:100s}    {:30s}    {:7.4f}    {:7.4f}".format(kgnode, action, batch_values[i, t, action_to_ix[action]].data.to("cpu").item(), reference.to("cpu").item()))
 
-    return sum(losses)
+    return sum(losses) / len(losses)
+
+
+def compute_accuracy(G, qa_instances, model, action_to_ix, max_len):
+
+    num_success = 0
+    for qa_instance in qa_instances:
+        with torch.no_grad():
+            _, _, reward_chain = simulate_episode(G, qa_instance, model, action_to_ix, max_len, 0.0)
+        num_success += 1 if (reward_chain[-1] == 1.0) else 0
+
+    return num_success / len(qa_instances)
 
 
 if __name__ == "__main__":
 
-    max_len = 3
+    max_len = 4
     gamma = 0.90
     epsilon_start = 1.00
     epsilon_end = 0.10
     decay_rate = 5.00
-    M = 10000
-    batch_size = 1
+    M = 100000
+    batch_size = 32
 
     entity_token = "[ETY]"
     tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", additional_special_tokens=[entity_token])
@@ -392,16 +408,20 @@ if __name__ == "__main__":
     G = read_MetaQA_KG()
 
     qa_train_1h, qa_dev_1h, qa_test_1h = read_MetaQA_Instances("1-hop", entity_token, DEVICE)
-#   qa_train_2h, qa_dev_2h, qa_test_2h = read_MetaQA_Instances("2-hop", entity_token, DEVICE)
-#   qa_train_3h, qa_dev_3h, qa_test_3h = read_MetaQA_Instances("3-hop", entity_token, DEVICE)
+    qa_train_2h, qa_dev_2h, qa_test_2h = read_MetaQA_Instances("2-hop", entity_token, DEVICE)
+    qa_train_3h, qa_dev_3h, qa_test_3h = read_MetaQA_Instances("3-hop", entity_token, DEVICE)
 
-    qa_train = pd.concat([qa_train_1h])
-    qa_dev = pd.concat([qa_dev_1h])
-    qa_test = pd.concat([qa_test_1h])
+#   qa_train = pd.concat([qa_train_1h])
+#   qa_dev = pd.concat([qa_dev_1h])
+#   qa_test = pd.concat([qa_test_1h])
 
-#    qa_train = pd.concat([qa_train_1h, qa_train_2h, qa_train_3h])
-#    qa_dev = pd.concat([qa_dev_1h, qa_dev_2h, qa_dev_3h])
-#    qa_test = pd.concat([qa_test_1h, qa_test_2h, qa_test_3h])
+#   qa_train = pd.concat([qa_train_1h, qa_train_2h])
+#   qa_dev = pd.concat([qa_dev_1h, qa_dev_2h])
+#   qa_test = pd.concat([qa_test_1h, qa_test_2h])
+
+    qa_train = pd.concat([qa_train_1h, qa_train_2h, qa_train_3h])
+    qa_dev = pd.concat([qa_dev_1h, qa_dev_2h, qa_dev_3h])
+    qa_test = pd.concat([qa_test_1h, qa_test_2h, qa_test_3h])
 
     possible_actions = ["[PAD]", "[SOS]"] + sorted(list(set([edge[2]["type"] for edge in G.edges(data=True)]))) + ["terminate"]
     action_to_ix = dict(map(reversed, enumerate(possible_actions)))
@@ -420,11 +440,11 @@ if __name__ == "__main__":
         qa_instance = qa_train.sample(1).values[0]
 
         with torch.no_grad():
-            qa_instance, kgnode_chain, action_chain, reward_chain = simulate_episode(G, qa_instance, model, action_to_ix, max_len, 0.90)
-        print("success" if reward_chain[-1] == 1.0 else "failure")
+            kgnode_chain, action_chain, reward_chain = simulate_episode(G, qa_instance, model, action_to_ix, max_len, epsilon, verbose=True)
+        print("success" if (reward_chain[-1] == 1.0) else "failure")
         print()
 
-        success_rate = 0.999 * success_rate + 0.001 * reward_chain[-1]
+        success_rate = 0.99 * success_rate + 0.01 * reward_chain[-1]
         print("success_rate: {:5.3f}".format(success_rate))
         print()
 
@@ -432,19 +452,20 @@ if __name__ == "__main__":
         if reward_chain[-1] == 1.0:
             memory_success.push(Episode(qa_instance, kgnode_chain, action_chain, reward_chain))
 
-        episodes = memory_overall.sample_last(batch_size)
+        # optimize model
+        episodes = memory_overall.sample_last(1) + memory_overall.sample_random(batch_size-1)
         for t in range(max_len):
-            # optimize model
-            loss = compute_loss(episodes, tokenizer, model, action_to_ix)
+            loss = compute_loss(episodes, tokenizer, model, action_to_ix, verbose=True)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             print()
 
 #       if (len(memory_success) > 0):
+#           # learn from successful experience
 #           succeed_episodes = memory_success.sample_random(batch_size)
 #           for t in range(T):
-#               loss = compute_loss(episodes, tokenizer, model, action_to_ix)
+#               loss = compute_loss(episodes, tokenizer, model, action_to_ix, verbose=True)
 #               optimizer.zero_grad()
 #               loss.backward()
 #               optimizer.step()
@@ -452,3 +473,13 @@ if __name__ == "__main__":
 
         print()
         print(flush=True)
+
+        if (m+1) % 1000 == 0:
+            print("validation accuracy for 1-hop questions is {:7.4f}".format(compute_accuracy(G, qa_dev_1h, model, action_to_ix, max_len)))
+            print("validation accuracy for 2-hop questions is {:7.4f}".format(compute_accuracy(G, qa_dev_2h, model, action_to_ix, max_len)))
+            print("validation accuracy for 3-hop questions is {:7.4f}".format(compute_accuracy(G, qa_dev_3h, model, action_to_ix, max_len)))
+            print()
+            print()
+            print()
+
+            torch.save({"model": model.state_dict()}, "checkpoints/save@{:07d}.pt".format(m+1))
