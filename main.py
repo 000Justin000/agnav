@@ -31,13 +31,13 @@ class EncoderDecoder(nn.Module):
     other models.
     """
 
-    def __init__(self, encoder, decoder, src_embed, trg_embed, q_function):
+    def __init__(self, encoder, decoder, src_embed, trg_embed, evaluator):
         super(EncoderDecoder, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
         self.src_embed = src_embed
         self.trg_embed = trg_embed
-        self.q_function = q_function
+        self.evaluator = evaluator
 
     def forward(self, src, trg, src_mask, trg_mask, src_lengths, trg_lengths):
         """Take in and process masked src and target sequences."""
@@ -197,17 +197,17 @@ class BahdanauAttention(nn.Module):
         return context, alphas
 
 
-class QFunction(nn.Module):
+class Evaluator(nn.Module):
     """Define standard linear action value function."""
     def __init__(self, hidden_size, vocab_size):
-        super(QFunction, self).__init__()
+        super(Evaluator, self).__init__()
         self.proj = nn.Linear(hidden_size, vocab_size, bias=False)
 
     def forward(self, x):
         return self.proj(x)
 
 
-def make_model(src_vocab, tgt_vocab, emb_size=256, hidden_size=512, num_layers=1, dropout=0.1):
+def make_model(src_vocab, tgt_vocab, emb_size=256, hidden_size=512, num_layers=1, dropout=0.0):
     "Helper: Construct a model from hyperparameters."
 
     attention = BahdanauAttention(hidden_size)
@@ -217,7 +217,7 @@ def make_model(src_vocab, tgt_vocab, emb_size=256, hidden_size=512, num_layers=1
         Decoder(emb_size, hidden_size, attention, num_layers=num_layers, dropout=dropout),
         nn.Embedding(src_vocab, emb_size),
         nn.Embedding(tgt_vocab, emb_size),
-        QFunction(hidden_size, tgt_vocab))
+        Evaluator(hidden_size, tgt_vocab))
 
     return model
 
@@ -242,28 +242,6 @@ class Batch:
         self.trg_lengths = trg_lengths
         self.trg_mask = (self.trg != pad_index)
         self.ntokens = self.trg_mask.data.sum().item()
-
-
-class SimpleLossCompute:
-    """A simple loss compute and train function."""
-
-    def __init__(self, q_function, criterion, opt=None):
-        self.q_function = q_function
-        self.criterion = criterion
-        self.opt = opt
-
-    def __call__(self, x, y, norm):
-        x = self.q_function(x)
-        loss = self.criterion(x.contiguous().view(-1, x.size(-1)),
-                              y.contiguous().view(-1))
-        loss = loss / norm
-
-        if self.opt is not None:
-            loss.backward()
-            self.opt.step()
-            self.opt.zero_grad()
-
-        return loss.data.item() * norm
 
 
 def simulate_episode(G, qa_instance, model, action_to_ix, max_len, epsilon, verbose=False):
@@ -297,7 +275,7 @@ def simulate_episode(G, qa_instance, model, action_to_ix, max_len, epsilon, verb
     for t in range(max_len):
         # compute the action value functions for available actions at the current node
         actions = unique([info["type"] for (_, _, info) in G.edges(kgnode, data=True)]) + ["terminate"]
-        values = model.q_function(context)[0, 0, [action_to_ix[action] for action in actions]]
+        values = model.evaluator(context)[0, 0, [action_to_ix[action] for action in actions]]
 
         # select the action at the current time step with epsilon-greedy policy
         if random.random() < epsilon:
@@ -359,7 +337,7 @@ def compute_loss(episodes, tokenizer, model, action_to_ax, verbose=False):
     batch, kgnode_chains, action_chains, reward_chains = make_batch(episodes, tokenizer, action_to_ix)
     _, _, pre_output = model.forward(batch.src, batch.trg, batch.src_mask, batch.trg_mask, batch.src_lengths, batch.trg_lengths)
 
-    batch_values = model.q_function(pre_output)
+    batch_values = model.evaluator(pre_output)
 
     losses = []
     for (i, (kgnode_chain, action_chain, reward_chain)) in enumerate(zip(kgnode_chains, action_chains, reward_chains)):
@@ -381,7 +359,7 @@ def compute_loss(episodes, tokenizer, model, action_to_ax, verbose=False):
     return sum(losses) / len(losses)
 
 
-def compute_accuracy(G, qa_instances, model, action_to_ix, max_len):
+def evaluate_accuracy(G, qa_instances, model, action_to_ix, max_len):
 
     num_success = 0
     for qa_instance in qa_instances:
@@ -394,8 +372,11 @@ def compute_accuracy(G, qa_instances, model, action_to_ix, max_len):
 
 if __name__ == "__main__":
 
+    emb_size = 256
+    hidden_size = 256
     max_len = 4
     gamma = 0.90
+    eta = 0.00
     epsilon_start = 1.00
     epsilon_end = 0.10
     decay_rate = 5.00
@@ -411,75 +392,64 @@ if __name__ == "__main__":
     qa_train_2h, qa_dev_2h, qa_test_2h = read_MetaQA_Instances("2-hop", entity_token, DEVICE)
     qa_train_3h, qa_dev_3h, qa_test_3h = read_MetaQA_Instances("3-hop", entity_token, DEVICE)
 
-#   qa_train = pd.concat([qa_train_1h])
-#   qa_dev = pd.concat([qa_dev_1h])
-#   qa_test = pd.concat([qa_test_1h])
-
-#   qa_train = pd.concat([qa_train_1h, qa_train_2h])
-#   qa_dev = pd.concat([qa_dev_1h, qa_dev_2h])
-#   qa_test = pd.concat([qa_test_1h, qa_test_2h])
-
     qa_train = pd.concat([qa_train_1h, qa_train_2h, qa_train_3h])
-    qa_dev = pd.concat([qa_dev_1h, qa_dev_2h, qa_dev_3h])
-    qa_test = pd.concat([qa_test_1h, qa_test_2h, qa_test_3h])
+    qa_dev   = pd.concat([  qa_dev_1h,   qa_dev_2h,   qa_dev_3h])
+    qa_test  = pd.concat([ qa_test_1h,  qa_test_2h,  qa_test_3h])
 
     possible_actions = ["[PAD]", "[SOS]"] + sorted(list(set([edge[2]["type"] for edge in G.edges(data=True)]))) + ["terminate"]
     action_to_ix = dict(map(reversed, enumerate(possible_actions)))
 
-    model = make_model(len(tokenizer), len(possible_actions), emb_size=32, hidden_size=64, dropout=0.0).to(DEVICE)
+    model = make_model(len(tokenizer), len(possible_actions), emb_size=emb_size, hidden_size=hidden_size, dropout=0.2).to(DEVICE)
     loss_func = nn.MSELoss()
-    optimizer = optim.AdamW(model.parameters(), betas=(0.9, 0.999), weight_decay=2.5e-4)
+    optimizer = optim.AdamW(model.parameters(), lr=3.0e-4, betas=(0.9, 0.999), weight_decay=2.5e-4)
 
     memory_overall = ReplayMemory(1000)
     memory_success = ReplayMemory(1000)
-    success_rate = 0.0
+    memory_failure = ReplayMemory(1000)
     for m in range(M):
         epsilon = epsilon_end + (epsilon_start - epsilon_end) * math.exp(-decay_rate * (m / M))
         print("epsilon: {:5.3f}".format(epsilon))
 
-        qa_instance = qa_train.sample(1).values[0]
+        if (len(memory_failure) > 0) and (random.random() < eta):
+            qa_instance = memory_failure.sample_random(1)[0].qa_instance
+        else:
+            qa_instance = qa_train.sample(1).values[0]
 
         with torch.no_grad():
             kgnode_chain, action_chain, reward_chain = simulate_episode(G, qa_instance, model, action_to_ix, max_len, epsilon, verbose=True)
-        print("success" if (reward_chain[-1] == 1.0) else "failure")
+        print()
+        print("outcome: " + ("success" if (reward_chain[-1] == 1.0) else "failure"))
         print()
 
-        success_rate = 0.99 * success_rate + 0.01 * reward_chain[-1]
-        print("success_rate: {:5.3f}".format(success_rate))
-        print()
-
-        memory_overall.push(Episode(qa_instance, kgnode_chain, action_chain, reward_chain))
         if reward_chain[-1] == 1.0:
+            memory_overall.push(Episode(qa_instance, kgnode_chain, action_chain, reward_chain))
             memory_success.push(Episode(qa_instance, kgnode_chain, action_chain, reward_chain))
+        else:
+            memory_overall.push(Episode(qa_instance, kgnode_chain, action_chain, reward_chain))
+            memory_failure.push(Episode(qa_instance, kgnode_chain, action_chain, reward_chain))
 
         # optimize model
-        episodes = memory_overall.sample_last(1) + memory_overall.sample_random(batch_size-1)
-        for t in range(max_len):
-            loss = compute_loss(episodes, tokenizer, model, action_to_ix, verbose=True)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            print()
-
-#       if (len(memory_success) > 0):
-#           # learn from successful experience
-#           succeed_episodes = memory_success.sample_random(batch_size)
-#           for t in range(T):
-#               loss = compute_loss(episodes, tokenizer, model, action_to_ix, verbose=True)
-#               optimizer.zero_grad()
-#               loss.backward()
-#               optimizer.step()
-#               print()
-
+        episodes = memory_overall.sample_random(batch_size)
+        loss = compute_loss(episodes, tokenizer, model, action_to_ix, verbose=True)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
         print()
-        print(flush=True)
+        print()
 
-        if (m+1) % 1000 == 0:
-            print("validation accuracy for 1-hop questions is {:7.4f}".format(compute_accuracy(G, qa_dev_1h, model, action_to_ix, max_len)))
-            print("validation accuracy for 2-hop questions is {:7.4f}".format(compute_accuracy(G, qa_dev_2h, model, action_to_ix, max_len)))
-            print("validation accuracy for 3-hop questions is {:7.4f}".format(compute_accuracy(G, qa_dev_3h, model, action_to_ix, max_len)))
+        if (m+1) % 10000 == 0:
+            model.train(False)
+            print("  training accuracies for 1-hop, 2-hop, 3-hop questions are {:7.4f}, {:7.4f}, {:7.4f}".format(evaluate_accuracy(G, qa_train_1h, model, action_to_ix, max_len), evaluate_accuracy(G, qa_train_2h, model, action_to_ix, max_len), evaluate_accuracy(G, qa_train_3h, model, action_to_ix, max_len)))
+            print("validation accuracies for 1-hop, 2-hop, 3-hop questions are {:7.4f}, {:7.4f}, {:7.4f}".format(evaluate_accuracy(G,   qa_dev_1h, model, action_to_ix, max_len), evaluate_accuracy(G,   qa_dev_2h, model, action_to_ix, max_len), evaluate_accuracy(G,   qa_dev_3h, model, action_to_ix, max_len)))
+            model.train(True)
             print()
             print()
             print()
 
             torch.save({"model": model.state_dict()}, "checkpoints/save@{:07d}.pt".format(m+1))
+
+    model.train(False)
+    print("  training accuracies for 1-hop, 2-hop, 3-hop questions are {:7.4f}, {:7.4f}, {:7.4f}".format(evaluate_accuracy(G, qa_train_1h, model, action_to_ix, max_len), evaluate_accuracy(G, qa_train_2h, model, action_to_ix, max_len), evaluate_accuracy(G, qa_train_3h, model, action_to_ix, max_len)))
+    print("validation accuracies for 1-hop, 2-hop, 3-hop questions are {:7.4f}, {:7.4f}, {:7.4f}".format(evaluate_accuracy(G,   qa_dev_1h, model, action_to_ix, max_len), evaluate_accuracy(G,   qa_dev_2h, model, action_to_ix, max_len), evaluate_accuracy(G,   qa_dev_3h, model, action_to_ix, max_len)))
+    print("   testing accuracies for 1-hop, 2-hop, 3-hop questions are {:7.4f}, {:7.4f}, {:7.4f}".format(evaluate_accuracy(G,  qa_test_1h, model, action_to_ix, max_len), evaluate_accuracy(G,  qa_test_2h, model, action_to_ix, max_len), evaluate_accuracy(G,  qa_test_3h, model, action_to_ix, max_len)))
+    model.train(True)
