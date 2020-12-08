@@ -1,4 +1,5 @@
 import os
+import sys
 import numpy as np
 import torch
 import torch.nn as nn
@@ -88,10 +89,10 @@ class Decoder(nn.Module):
         self.attention = attention
         self.dropout = dropout
 
-        self.rnn = nn.GRU(emb_size + 2 * hidden_size, hidden_size, num_layers, batch_first=True, dropout=dropout)
+        self.rnn = nn.GRU(emb_size+2*hidden_size, hidden_size, num_layers, batch_first=True, dropout=dropout)
 
         # to initialize from the final encoder state
-        self.bridge = nn.Linear(2 * hidden_size, hidden_size, bias=True) if bridge else None
+        self.bridge = nn.Linear(2*hidden_size, hidden_size, bias=True) if bridge else None
 
         self.dropout_layer = nn.Dropout(p=dropout)
         self.pre_output_layer = nn.Linear(hidden_size + 2*hidden_size + emb_size, hidden_size, bias=False)
@@ -376,12 +377,18 @@ if __name__ == "__main__":
     hidden_size = 256
     max_len = 4
     gamma = 0.90
-    eta = 0.00
+    kappa = 0.00
     epsilon_start = 1.00
     epsilon_end = 0.10
     decay_rate = 5.00
-    M = 100000
+    M = 30000
     batch_size = 32
+
+
+    experiment = "e{:03d}_h{:03d}_g{:03d}_k{:03d}_m{:07d}".format(emb_size, hidden_size, int(gamma*100), int(kappa*100), M)
+    os.makedirs("checkpoints/{:s}".format(experiment), exist_ok=True)
+    sys.stderr = sys.stdout = open("logs/{:s}".format(experiment), "w")
+
 
     entity_token = "[ETY]"
     tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", additional_special_tokens=[entity_token])
@@ -396,12 +403,14 @@ if __name__ == "__main__":
     qa_dev   = pd.concat([  qa_dev_1h,   qa_dev_2h,   qa_dev_3h])
     qa_test  = pd.concat([ qa_test_1h,  qa_test_2h,  qa_test_3h])
 
+
     possible_actions = ["[PAD]", "[SOS]"] + sorted(list(set([edge[2]["type"] for edge in G.edges(data=True)]))) + ["terminate"]
     action_to_ix = dict(map(reversed, enumerate(possible_actions)))
 
-    model = make_model(len(tokenizer), len(possible_actions), emb_size=emb_size, hidden_size=hidden_size, dropout=0.2).to(DEVICE)
+    model = make_model(len(tokenizer), len(possible_actions), emb_size=emb_size, hidden_size=hidden_size, num_layers=1, dropout=0.2).to(DEVICE)
     loss_func = nn.MSELoss()
     optimizer = optim.AdamW(model.parameters(), lr=3.0e-4, betas=(0.9, 0.999), weight_decay=2.5e-4)
+
 
     memory_overall = ReplayMemory(1000)
     memory_success = ReplayMemory(1000)
@@ -410,7 +419,7 @@ if __name__ == "__main__":
         epsilon = epsilon_end + (epsilon_start - epsilon_end) * math.exp(-decay_rate * (m / M))
         print("epsilon: {:5.3f}".format(epsilon))
 
-        if (len(memory_failure) > 0) and (random.random() < eta):
+        if (len(memory_failure) > 0) and (random.random() < kappa):
             qa_instance = memory_failure.sample_random(1)[0].qa_instance
         else:
             qa_instance = qa_train.sample(1).values[0]
@@ -446,7 +455,7 @@ if __name__ == "__main__":
             print()
             print()
 
-            torch.save({"model": model.state_dict()}, "checkpoints/save@{:07d}.pt".format(m+1))
+            torch.save({"model": model.state_dict()}, "checkpoints/{:s}/save@{:07d}.pt".format(experiment, m+1))
 
     model.train(False)
     print("  training accuracies for 1-hop, 2-hop, 3-hop questions are {:7.4f}, {:7.4f}, {:7.4f}".format(evaluate_accuracy(G, qa_train_1h, model, action_to_ix, max_len), evaluate_accuracy(G, qa_train_2h, model, action_to_ix, max_len), evaluate_accuracy(G, qa_train_3h, model, action_to_ix, max_len)))
