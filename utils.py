@@ -94,14 +94,7 @@ def read_MetaQA_Instances(question_type="1-hop", entity_token="[ETY]", device="c
 
     def info_to_instance(info):
         processed_question, entity = process_question(info["question"])
-
-        # tokenized_inputs = tokenizer(processed_question, max_length=50, padding="max_length", truncation=True, return_tensors="pt")
-        # tokenized_inputs["input_ids"] = tokenized_inputs["input_ids"].to(device)
-        # tokenized_inputs["token_type_ids"] = tokenized_inputs["token_type_ids"].to(device)
-        # tokenized_inputs["attention_mask"] = tokenized_inputs["attention_mask"].to(device)
-
         decorated_entity = info["question_type"].split('_')[0] + ": " + entity
-
         answer_set = process_answers(info["answers"])
 
         return QAInstance(processed_question, decorated_entity, answer_set)
