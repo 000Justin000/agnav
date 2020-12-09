@@ -360,12 +360,14 @@ def compute_loss(episodes, tokenizer, model, action_to_ix, verbose=False):
     return sum(losses) / len(losses)
 
 
-def evaluate_accuracy(G, qa_instances, model, action_to_ix, max_len):
+def evaluate_accuracy(G, qa_instances, model, action_to_ix, max_len, verbose=False):
 
     num_success = 0
     for qa_instance in qa_instances:
         with torch.no_grad():
-            _, _, reward_chain = simulate_episode(G, qa_instance, model, action_to_ix, max_len, 0.0)
+            _, _, reward_chain = simulate_episode(G, qa_instance, model, action_to_ix, max_len, 0.0, verbose)
+        if verbose:
+            print("\noutcome: {:s}\n".format("success" if (reward_chain[-1] == 1.0) else "failure"))
         num_success += 1 if (reward_chain[-1] == 1.0) else 0
 
     return num_success / len(qa_instances)
@@ -378,11 +380,11 @@ if __name__ == "__main__":
     num_layers = 1
     max_len = 4
     gamma = 0.90
-    kappa = 0.00
+    kappa = 0.10
     epsilon_start = 1.00
     epsilon_end = 0.10
     decay_rate = 5.00
-    M = 30000
+    M = 2000000
     batch_size = 32
 
 
@@ -427,9 +429,7 @@ if __name__ == "__main__":
 
         with torch.no_grad():
             kgnode_chain, action_chain, reward_chain = simulate_episode(G, qa_instance, model, action_to_ix, max_len, epsilon, verbose=True)
-        print()
-        print("outcome: " + ("success" if (reward_chain[-1] == 1.0) else "failure"))
-        print()
+        print("\noutcome: {:s}\n".format("success" if (reward_chain[-1] == 1.0) else "failure"))
 
         if reward_chain[-1] == 1.0:
             memory_overall.push(Episode(qa_instance, kgnode_chain, action_chain, reward_chain))
@@ -444,20 +444,17 @@ if __name__ == "__main__":
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        print()
-        print()
+        print("\n")
 
-        if (m+1) % 10000 == 0:
+        if (m+1) % 100000 == 0:
             model.train(False)
             print("  training accuracies for 1-hop, 2-hop, 3-hop questions are {:7.4f}, {:7.4f}, {:7.4f}".format(evaluate_accuracy(G, qa_train_1h, model, action_to_ix, max_len), evaluate_accuracy(G, qa_train_2h, model, action_to_ix, max_len), evaluate_accuracy(G, qa_train_3h, model, action_to_ix, max_len)))
             print("validation accuracies for 1-hop, 2-hop, 3-hop questions are {:7.4f}, {:7.4f}, {:7.4f}".format(evaluate_accuracy(G,   qa_dev_1h, model, action_to_ix, max_len), evaluate_accuracy(G,   qa_dev_2h, model, action_to_ix, max_len), evaluate_accuracy(G,   qa_dev_3h, model, action_to_ix, max_len)))
             model.train(True)
-            print()
-            print()
-            print()
+            print("\n\n")
 
             torch.save({"model": model.state_dict()}, "checkpoints/{:s}/save@{:07d}.pt".format(experiment, m+1))
 
     model.train(False)
-    print("   testing accuracies for 1-hop, 2-hop, 3-hop questions are {:7.4f}, {:7.4f}, {:7.4f}".format(evaluate_accuracy(G,  qa_test_1h, model, action_to_ix, max_len), evaluate_accuracy(G,  qa_test_2h, model, action_to_ix, max_len), evaluate_accuracy(G,  qa_test_3h, model, action_to_ix, max_len)))
+    print("   testing accuracies for 1-hop, 2-hop, 3-hop questions are {:7.4f}, {:7.4f}, {:7.4f}".format(evaluate_accuracy(G,  qa_test_1h, model, action_to_ix, max_len, True), evaluate_accuracy(G,  qa_test_2h, model, action_to_ix, max_len, True), evaluate_accuracy(G,  qa_test_3h, model, action_to_ix, max_len, True)))
     model.train(True)
