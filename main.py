@@ -333,7 +333,7 @@ def make_batch(episodes, tokenizer, action_to_ix, pad_index=0, sos_index=1):
     return Batch((src, src_lengths), (trg, trg_lengths), pad_index=pad_index), kgnode_chains, action_chains, reward_chains
 
 
-def compute_loss(episodes, tokenizer, model, action_to_ax, verbose=False):
+def compute_loss(episodes, tokenizer, model, action_to_ix, verbose=False):
 
     batch, kgnode_chains, action_chains, reward_chains = make_batch(episodes, tokenizer, action_to_ix)
     _, _, pre_output = model.forward(batch.src, batch.trg, batch.src_mask, batch.trg_mask, batch.src_lengths, batch.trg_lengths)
@@ -375,6 +375,7 @@ if __name__ == "__main__":
 
     emb_size = 256
     hidden_size = 256
+    num_layers = 1
     max_len = 4
     gamma = 0.90
     kappa = 0.00
@@ -385,7 +386,7 @@ if __name__ == "__main__":
     batch_size = 32
 
 
-    experiment = "e{:03d}_h{:03d}_g{:03d}_k{:03d}_m{:07d}".format(emb_size, hidden_size, int(gamma*100), int(kappa*100), M)
+    experiment = "e{:03d}_h{:03d}_l{:02d}_g{:03d}_k{:03d}_m{:07d}".format(emb_size, hidden_size, num_layers, int(gamma*100), int(kappa*100), M)
     os.makedirs("checkpoints/{:s}".format(experiment), exist_ok=True)
     sys.stderr = sys.stdout = open("logs/{:s}".format(experiment), "w")
 
@@ -407,7 +408,7 @@ if __name__ == "__main__":
     possible_actions = ["[PAD]", "[SOS]"] + sorted(list(set([edge[2]["type"] for edge in G.edges(data=True)]))) + ["terminate"]
     action_to_ix = dict(map(reversed, enumerate(possible_actions)))
 
-    model = make_model(len(tokenizer), len(possible_actions), emb_size=emb_size, hidden_size=hidden_size, num_layers=1, dropout=0.2).to(DEVICE)
+    model = make_model(len(tokenizer), len(possible_actions), emb_size=emb_size, hidden_size=hidden_size, num_layers=num_layers, dropout=0.2).to(DEVICE)
     loss_func = nn.MSELoss()
     optimizer = optim.AdamW(model.parameters(), lr=3.0e-4, betas=(0.9, 0.999), weight_decay=2.5e-4)
 
@@ -458,7 +459,5 @@ if __name__ == "__main__":
             torch.save({"model": model.state_dict()}, "checkpoints/{:s}/save@{:07d}.pt".format(experiment, m+1))
 
     model.train(False)
-    print("  training accuracies for 1-hop, 2-hop, 3-hop questions are {:7.4f}, {:7.4f}, {:7.4f}".format(evaluate_accuracy(G, qa_train_1h, model, action_to_ix, max_len), evaluate_accuracy(G, qa_train_2h, model, action_to_ix, max_len), evaluate_accuracy(G, qa_train_3h, model, action_to_ix, max_len)))
-    print("validation accuracies for 1-hop, 2-hop, 3-hop questions are {:7.4f}, {:7.4f}, {:7.4f}".format(evaluate_accuracy(G,   qa_dev_1h, model, action_to_ix, max_len), evaluate_accuracy(G,   qa_dev_2h, model, action_to_ix, max_len), evaluate_accuracy(G,   qa_dev_3h, model, action_to_ix, max_len)))
     print("   testing accuracies for 1-hop, 2-hop, 3-hop questions are {:7.4f}, {:7.4f}, {:7.4f}".format(evaluate_accuracy(G,  qa_test_1h, model, action_to_ix, max_len), evaluate_accuracy(G,  qa_test_2h, model, action_to_ix, max_len), evaluate_accuracy(G,  qa_test_3h, model, action_to_ix, max_len)))
     model.train(True)
