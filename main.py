@@ -112,7 +112,7 @@ class Decoder(nn.Module):
         pre_output = self.dropout_layer(pre_output)
         pre_output = self.pre_output_layer(pre_output)
 
-        return output, hidden, pre_output
+        return output, hidden, pre_output, attn_probs
 
     def forward(self, trg_embed, encoder_hidden, encoder_final, src_mask, trg_mask, hidden=None, max_len=None):
         """Unroll the decoder one step at a time."""
@@ -133,17 +133,19 @@ class Decoder(nn.Module):
         # here we store all intermediate hidden states and pre-output vectors
         decoder_states = []
         pre_output_vectors = []
+        attn_probs_history = []
 
         # unroll the decoder RNN for max_len steps
         for i in range(max_len):
             prev_embed = trg_embed[:, i].unsqueeze(1)
-            output, hidden, pre_output = self.forward_step(prev_embed, encoder_hidden, src_mask, proj_key, hidden)
+            output, hidden, pre_output, attn_probs = self.forward_step(prev_embed, encoder_hidden, src_mask, proj_key, hidden)
             decoder_states.append(output)
             pre_output_vectors.append(pre_output)
+            attn_probs_history.append(attn_probs)
 
         decoder_states = torch.cat(decoder_states, dim=1)
         pre_output_vectors = torch.cat(pre_output_vectors, dim=1)
-        return decoder_states, hidden, pre_output_vectors  # [B, N, D]
+        return decoder_states, hidden, pre_output_vectors, attn_probs_history  # [B, N, D]
 
     def init_hidden(self, encoder_final):
         """Returns the initial decoder state,
@@ -245,7 +247,7 @@ class Batch:
         self.ntokens = self.trg_mask.data.sum().item()
 
 
-def simulate_episode(G, qa_instance, model, action_to_ix, max_len, epsilon, verbose=False):
+def simulate_episode(G, qa_instance, tokenizer, model, action_to_ix, max_len, epsilon, verbose=False):
 
     question, decorated_entity, answer_set = qa_instance
     tokenized_inputs = tokenizer(question, max_length=50, padding=True, truncation=True, return_tensors="pt")
@@ -271,7 +273,7 @@ def simulate_episode(G, qa_instance, model, action_to_ix, max_len, epsilon, verb
     # initialize decoder hidden state
     hidden_init = model.decoder.init_hidden(encoder_final)
     sos_embed = model.trg_embed(torch.tensor([action_to_ix["[SOS]"]], device=DEVICE)).unsqueeze(1)
-    _, hidden, context = model.decoder.forward_step(sos_embed, encoder_hidden, src_mask, proj_key, hidden_init)
+    _, hidden, context, _ = model.decoder.forward_step(sos_embed, encoder_hidden, src_mask, proj_key, hidden_init)
 
     for t in range(max_len):
         # compute the action value functions for available actions at the current node
@@ -294,7 +296,7 @@ def simulate_episode(G, qa_instance, model, action_to_ix, max_len, epsilon, verb
             reward = torch.tensor(0.0).to(DEVICE)
             kgnode_next = random.choice(list(filter(lambda tp: tp[2]["type"] == action, G.edges(kgnode, data=True))))[1]
             action_embed = model.trg_embed(torch.tensor([action_to_ix[action]], device=DEVICE)).unsqueeze(1)
-            _, hidden_next, context_next = model.decoder.forward_step(action_embed, encoder_hidden, src_mask, proj_key, hidden)
+            _, hidden_next, context_next, _ = model.decoder.forward_step(action_embed, encoder_hidden, src_mask, proj_key, hidden)
 
         kgnode_chain.append(kgnode)
         action_chain.append(action)
@@ -336,7 +338,7 @@ def make_batch(episodes, tokenizer, action_to_ix, pad_index=0, sos_index=1):
 def compute_loss(episodes, tokenizer, model, action_to_ix, verbose=False):
 
     batch, kgnode_chains, action_chains, reward_chains = make_batch(episodes, tokenizer, action_to_ix)
-    _, _, pre_output = model.forward(batch.src, batch.trg, batch.src_mask, batch.trg_mask, batch.src_lengths, batch.trg_lengths)
+    _, _, pre_output, _ = model.forward(batch.src, batch.trg, batch.src_mask, batch.trg_mask, batch.src_lengths, batch.trg_lengths)
 
     batch_values = model.evaluator(pre_output)
 
@@ -360,12 +362,12 @@ def compute_loss(episodes, tokenizer, model, action_to_ix, verbose=False):
     return sum(losses) / len(losses)
 
 
-def evaluate_accuracy(G, qa_instances, model, action_to_ix, max_len, verbose=False):
+def evaluate_accuracy(G, qa_instances, tokenizer, model, action_to_ix, max_len, verbose=False):
 
     num_success = 0
     for qa_instance in qa_instances:
         with torch.no_grad():
-            _, _, reward_chain = simulate_episode(G, qa_instance, model, action_to_ix, max_len, 0.0, verbose)
+            _, _, reward_chain = simulate_episode(G, qa_instance, tokenizer, model, action_to_ix, max_len, 0.0, verbose)
         if verbose:
             print("\noutcome: {:s}\n".format("success" if (reward_chain[-1] == 1.0) else "failure"))
         num_success += 1 if (reward_chain[-1] == 1.0) else 0
@@ -376,15 +378,15 @@ def evaluate_accuracy(G, qa_instances, model, action_to_ix, max_len, verbose=Fal
 if __name__ == "__main__":
 
     emb_size = 256
-    hidden_size = 256
+    hidden_size = 512
     num_layers = 1
     max_len = 4
     gamma = 0.90
-    kappa = 0.10
+    kappa = 0.20
     epsilon_start = 1.00
     epsilon_end = 0.10
     decay_rate = 5.00
-    M = 2000000
+    M = 3000000
     batch_size = 32
 
 
@@ -428,7 +430,7 @@ if __name__ == "__main__":
             qa_instance = qa_train.sample(1).values[0]
 
         with torch.no_grad():
-            kgnode_chain, action_chain, reward_chain = simulate_episode(G, qa_instance, model, action_to_ix, max_len, epsilon, verbose=True)
+            kgnode_chain, action_chain, reward_chain = simulate_episode(G, qa_instance, tokenizer, model, action_to_ix, max_len, epsilon, verbose=True)
         print("\noutcome: {:s}\n".format("success" if (reward_chain[-1] == 1.0) else "failure"))
 
         if reward_chain[-1] == 1.0:
@@ -448,13 +450,19 @@ if __name__ == "__main__":
 
         if (m+1) % 100000 == 0:
             model.train(False)
-            print("  training accuracies for 1-hop, 2-hop, 3-hop questions are {:7.4f}, {:7.4f}, {:7.4f}".format(evaluate_accuracy(G, qa_train_1h, model, action_to_ix, max_len), evaluate_accuracy(G, qa_train_2h, model, action_to_ix, max_len), evaluate_accuracy(G, qa_train_3h, model, action_to_ix, max_len)))
-            print("validation accuracies for 1-hop, 2-hop, 3-hop questions are {:7.4f}, {:7.4f}, {:7.4f}".format(evaluate_accuracy(G,   qa_dev_1h, model, action_to_ix, max_len), evaluate_accuracy(G,   qa_dev_2h, model, action_to_ix, max_len), evaluate_accuracy(G,   qa_dev_3h, model, action_to_ix, max_len)))
+            print("  training accuracies for 1-hop, 2-hop, 3-hop questions are {:7.4f}, {:7.4f}, {:7.4f}".format(evaluate_accuracy(G, qa_train_1h, tokenizer, model, action_to_ix, max_len),
+                                                                                                                 evaluate_accuracy(G, qa_train_2h, tokenizer, model, action_to_ix, max_len),
+                                                                                                                 evaluate_accuracy(G, qa_train_3h, tokenizer, model, action_to_ix, max_len)))
+            print("validation accuracies for 1-hop, 2-hop, 3-hop questions are {:7.4f}, {:7.4f}, {:7.4f}".format(evaluate_accuracy(G,   qa_dev_1h, tokenizer, model, action_to_ix, max_len),
+                                                                                                                 evaluate_accuracy(G,   qa_dev_2h, tokenizer, model, action_to_ix, max_len),
+                                                                                                                 evaluate_accuracy(G,   qa_dev_3h, tokenizer, model, action_to_ix, max_len)))
             model.train(True)
             print("\n\n")
 
             torch.save({"model": model.state_dict()}, "checkpoints/{:s}/save@{:07d}.pt".format(experiment, m+1))
 
     model.train(False)
-    print("   testing accuracies for 1-hop, 2-hop, 3-hop questions are {:7.4f}, {:7.4f}, {:7.4f}".format(evaluate_accuracy(G,  qa_test_1h, model, action_to_ix, max_len, True), evaluate_accuracy(G,  qa_test_2h, model, action_to_ix, max_len, True), evaluate_accuracy(G,  qa_test_3h, model, action_to_ix, max_len, True)))
+    print("   testing accuracies for 1-hop, 2-hop, 3-hop questions are {:7.4f}, {:7.4f}, {:7.4f}".format(evaluate_accuracy(G,  qa_test_1h, tokenizer, model, action_to_ix, max_len, True),
+                                                                                                         evaluate_accuracy(G,  qa_test_2h, tokenizer, model, action_to_ix, max_len, True),
+                                                                                                         evaluate_accuracy(G,  qa_test_3h, tokenizer, model, action_to_ix, max_len, True)))
     model.train(True)
